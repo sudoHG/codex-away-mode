@@ -1,0 +1,9 @@
+[project]
+name = "codex-away-mode"
+version = "0.1.0"
+description = "Codex Away Mode skill runtime scripts"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["codex-away-mode/scripts"]

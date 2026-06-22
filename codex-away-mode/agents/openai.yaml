@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Away Mode"
+  short_description: "Feishu Away Mode and completion notifications for Codex"
+  default_prompt: "Use $codex-away-mode to start Away Mode and wait for my Feishu reply."
