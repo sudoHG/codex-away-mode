@@ -11,6 +11,7 @@ from typing import Any
 from . import cards
 from .config import AppConfig, load_config, save_config
 from .lark import LarkMessage
+from .thread_context import resolve_card_title_context
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,11 @@ class AwayWaiter:
 
         card_result = self.lark.send_interactive_card(
             chat_id=chat_id,
-            card=cards.away_card(context=context, deadline=deadline),
+            card=cards.away_card(
+                context=context,
+                deadline=deadline,
+                title_context=self._title_context(context=context),
+            ),
         )
         window_id = self._create_window(
             chat_id=chat_id,
@@ -200,6 +205,7 @@ class AwayWaiter:
                 unverified=str(progress_context.get("unverified") or "无"),
                 need_user=str(progress_context.get("need_user") or "请回复这张卡片继续。"),
                 deadline=deadline,
+                title_context=self._title_context(context=progress_context, session=session),
             ),
         )
         sent_at = _ensure_utc(self.clock.now()).isoformat()
@@ -230,6 +236,7 @@ class AwayWaiter:
     ) -> dict[str, Any]:
         chat_id = window["recipient_id"]
         project = str(context.get("project") or session.get("project") or "Codex Away Mode")
+        title_context = self._title_context(context=context, session=session)
         wait_minutes_remaining = (deadline - _ensure_utc(self.clock.now())).total_seconds() / 60
         reminder_allowed = wait_minutes_remaining > int(self.config.pre_timeout_reminder_minutes)
         reminder_at = deadline - timedelta(minutes=int(self.config.pre_timeout_reminder_minutes))
@@ -251,6 +258,7 @@ class AwayWaiter:
                         project=project,
                         deadline=deadline,
                         minutes_left=int(self.config.pre_timeout_reminder_minutes),
+                        title_context=title_context,
                     ),
                 )
                 self.store.record_card(
@@ -524,6 +532,7 @@ class AwayWaiter:
                 card=cards.user_ended_card(
                     project=str(session.get("project") or "Codex Away Mode"),
                     ended_at=closed_at,
+                    title_context=self._title_context(session=session),
                 ),
             )
             self.store.close_away_session(
@@ -567,7 +576,11 @@ class AwayWaiter:
         project = str(context.get("project") or session.get("project") or "Codex Away Mode")
         self.lark.send_interactive_card(
             chat_id=chat_id,
-            card=cards.timeout_card(project=project, deadline=deadline),
+            card=cards.timeout_card(
+                project=project,
+                deadline=deadline,
+                title_context=self._title_context(context=context, session=session),
+            ),
         )
         closed_at = _ensure_utc(self.clock.now()).isoformat()
         self.store.close_away_session(
@@ -637,6 +650,22 @@ class AwayWaiter:
                 source=source,
                 verified_at=_ensure_utc(self.clock.now()).isoformat(),
             )
+
+    def _title_context(
+        self,
+        *,
+        context: dict[str, Any] | None = None,
+        session: dict[str, Any] | None = None,
+    ):
+        merged: dict[str, Any] = {}
+        if session:
+            merged.update(session)
+        if context:
+            merged.update(context)
+        return resolve_card_title_context(
+            cwd=_optional_text(merged.get("cwd")),
+            explicit_codex_session_id=_optional_text(merged.get("codex_session_id")),
+        )
 
     def _issue_resume_token(self, session_id: str) -> str:
         token = "rt_" + secrets.token_urlsafe(24)

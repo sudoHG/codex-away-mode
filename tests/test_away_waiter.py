@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import shutil
 from dataclasses import replace
@@ -147,6 +148,65 @@ def _processed_rows(store):
     with sqlite3.connect(store.path) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute("SELECT * FROM processed_messages")]
+
+
+def _write_session_index(codex_home, thread_id="thread_1", thread_name="建立 Skill-Create 基线"):
+    codex_home.mkdir(parents=True)
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps({"id": thread_id, "thread_name": thread_name}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_initial_away_card_title_uses_programmatic_context_not_project_arg(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    _write_session_index(codex_home)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    lark = FakeLark([[_message("om_reply", "继续")]])
+    waiter, _store = _waiter(tmp_path, lark=lark)
+
+    result = waiter.wait(
+        _context(
+            project="Agent 传错的项目名",
+            cwd="/Users/hutong/Codex项目/Skill-Create",
+            codex_session_id="thread_1",
+        )
+    )
+
+    assert result["status"] == "reply"
+    title = lark.sent_cards[0]["card"]["header"]["title"]["content"]
+    assert title == "Codex Away Mode 等待中 - Skill-Create / 建立 Skill-Create 基线"
+    assert "Agent 传错的项目名" not in title
+
+
+def test_timeout_away_card_title_uses_programmatic_context(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    _write_session_index(codex_home)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    clock = FakeClock()
+    lark = FakeLark([[], [], []])
+    waiter, _store = _waiter(
+        tmp_path,
+        clock=clock,
+        lark=lark,
+        config=_config(poll_interval_seconds=60),
+    )
+
+    result = waiter.wait(
+        _context(
+            project="Agent 传错的项目名",
+            cwd="/Users/hutong/Codex项目/Skill-Create",
+            codex_session_id="thread_1",
+            wait_minutes=2,
+        )
+    )
+
+    assert result["status"] == "timeout"
+    title = lark.sent_cards[-1]["card"]["header"]["title"]["content"]
+    assert title == "Away Mode 已超时 - Skill-Create / 建立 Skill-Create 基线"
+    assert "Agent 传错的项目名" not in title
 
 
 def test_prompt_delivery_pauses_window_and_returns_resume_contract(tmp_path):

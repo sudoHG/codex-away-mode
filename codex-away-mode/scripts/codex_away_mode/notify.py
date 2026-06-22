@@ -209,6 +209,8 @@ def send_away_early_exit_if_needed(
                 lark.send_away_timeout_card(
                     {
                         "project": session.get("project") or "Codex Away Mode",
+                        "cwd": session.get("cwd") or cwd,
+                        "codex_session_id": session.get("codex_session_id") or codex_session_id,
                         "deadline": deadline,
                     }
                 )

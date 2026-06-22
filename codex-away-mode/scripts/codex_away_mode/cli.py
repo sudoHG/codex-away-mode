@@ -14,6 +14,7 @@ from .away import AwayWaiter
 from .config import RuntimePaths, RuntimeStateError, ensure_runtime_state_writable, load_config, save_config
 from .lark import LarkCli, LarkCliError
 from .state import StateStore, open_install_store
+from .thread_context import resolve_card_title_context
 from .time import SystemClock
 
 COMMANDS = {"version", "install", "setup", "doctor", "notify", "away", "uninstall"}
@@ -350,7 +351,7 @@ def _handle_notify(args, paths, *, stdin=None):
         try:
             early_exit = notify.send_away_early_exit_if_needed(
                 paths,
-                _NotificationClient(paths),
+                _NotificationClient(paths, hook_stdin=hook_stdin),
                 cwd=cwd,
                 now=now,
                 hook_stdin=hook_stdin,
@@ -370,7 +371,7 @@ def _handle_notify(args, paths, *, stdin=None):
         try:
             result = notify.send_completion_from_summary(
                 paths,
-                _NotificationClient(paths),
+                _NotificationClient(paths, hook_stdin=hook_stdin),
                 cwd=cwd,
                 now=now,
                 hook_stdin=hook_stdin,
@@ -576,15 +577,16 @@ def _read_hook_stdin(stdin) -> str | None:
 
 
 class _NotificationClient:
-    def __init__(self, paths) -> None:
+    def __init__(self, paths, *, hook_stdin=None, env=None) -> None:
         self.paths = paths
+        self.hook_stdin = hook_stdin
+        self.env = env
         self.config = load_config(paths.config_path)
         self.lark = LarkCli(self.config.lark_cli_path)
 
     def send_summary_card(self, markdown: str, cwd: str | None = None):
         sections = cards.summary_sections(markdown)
         footer_cwd = sections.get("工作目录") or cwd
-        project = sections.get("项目") or cards.project_from_cwd(footer_cwd)
         fields = {
             key: value
             for key, value in sections.items()
@@ -593,11 +595,11 @@ class _NotificationClient:
         return self._send_card(
             cards.completion_card(
                 title="Codex 完成通知",
-                project=project,
                 fields=fields,
                 footer_cwd=footer_cwd,
                 footer_mode_text=self._notification_footer_text(),
                 now=SystemClock().now(),
+                title_context=self._title_context(cwd=footer_cwd or cwd),
             )
         )
 
@@ -607,6 +609,7 @@ class _NotificationClient:
                 reason="summary missing or not usable",
                 cwd=cwd,
                 now=SystemClock().now(),
+                title_context=self._title_context(cwd=cwd),
             )
         )
 
@@ -631,6 +634,10 @@ class _NotificationClient:
                 unverified=payload["unverified"],
                 need_user=payload["need_user"],
                 stopped_at=payload["stopped_at"],
+                title_context=self._title_context(
+                    cwd=payload.get("cwd"),
+                    explicit_codex_session_id=payload.get("codex_session_id"),
+                ),
             )
         )
 
@@ -639,6 +646,10 @@ class _NotificationClient:
             cards.timeout_card(
                 project=payload["project"],
                 deadline=payload["deadline"],
+                title_context=self._title_context(
+                    cwd=payload.get("cwd"),
+                    explicit_codex_session_id=payload.get("codex_session_id"),
+                ),
             )
         )
 
@@ -653,3 +664,12 @@ class _NotificationClient:
 
     def _notification_footer_text(self):
         return cards.notification_mode_footer_text(self.config.notification_mode)
+
+    def _title_context(self, *, cwd=None, explicit_codex_session_id=None):
+        return resolve_card_title_context(
+            cwd=cwd,
+            hook_stdin=self.hook_stdin,
+            env=self.env,
+            codex_home=self.paths.codex_home,
+            explicit_codex_session_id=explicit_codex_session_id,
+        )

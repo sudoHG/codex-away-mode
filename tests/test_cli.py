@@ -115,20 +115,39 @@ def test_notify_mode_updates_config_under_codex_home(tmp_path, monkeypatch, caps
 
 def test_notification_client_summary_card_uses_project_title_footer_cwd_and_time(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps(
+            {"id": "thread_1", "thread_name": "建立 Skill-Create 基线"},
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread_1")
     paths = RuntimePaths.from_environment()
     save_config(paths.config_path, AppConfig(feishu_chat_id="oc_chat"))
     monkeypatch.setattr(cli, "SystemClock", lambda: FixedClock())
     client = cli._NotificationClient(paths)
     client.lark = CapturingLark()
-    markdown = "**项目**\nDemo\n\n**工作目录**\n/workspace/demo\n\n**完成**\nDone\n"
+    markdown = (
+        "**项目**\n"
+        "Skill-Create / 飞书通知与 AwayMode\n\n"
+        "**工作目录**\n"
+        "/workspace/Skill-Create\n\n"
+        "**完成**\n"
+        "Done\n"
+    )
 
     client.send_summary_card(markdown)
 
     card = client.lark.cards[0]
     text = flatten_text(card)
-    assert card["header"]["title"]["content"] == "Codex 完成通知 - Demo"
+    assert card["header"]["title"]["content"] == "Codex 完成通知 - Skill-Create / 建立 Skill-Create 基线"
+    assert "飞书通知与 AwayMode" not in card["header"]["title"]["content"]
     assert "**工作目录**" not in text
-    assert "工作目录：/workspace/demo" in text
+    assert "工作目录：/workspace/Skill-Create" in text
     assert "发送时间：" in text
     assert "发送时间：18:00" in text
     assert "告诉Codex" in text
@@ -396,7 +415,7 @@ def test_notify_stop_does_not_read_workspace_latest_summary(
         AppConfig(feishu_chat_id="oc_chat"),
     )
     client = CapturingNotificationClient()
-    monkeypatch.setattr(cli, "_NotificationClient", lambda paths: client)
+    monkeypatch.setattr(cli, "_NotificationClient", lambda paths, **kwargs: client)
 
     code, captured = run_cli(
         capsys,
@@ -443,7 +462,7 @@ def test_notify_stop_active_away_guard_runs_before_notification_mode_off(
         processed_at="2026-06-20T09:30:00Z",
     )
     client = CapturingNotificationClient()
-    monkeypatch.setattr(cli, "_NotificationClient", lambda paths: client)
+    monkeypatch.setattr(cli, "_NotificationClient", lambda paths, **kwargs: client)
     monkeypatch.setattr(cli, "SystemClock", lambda: FixedClock())
 
     code = cli.main(
@@ -1107,7 +1126,7 @@ def test_notify_stop_ignores_workspace_away_state_when_present(tmp_path, monkeyp
         processed_at="2026-06-20T09:30:00Z",
     )
     client = CapturingNotificationClient()
-    monkeypatch.setattr(cli, "_NotificationClient", lambda paths: client)
+    monkeypatch.setattr(cli, "_NotificationClient", lambda paths, **kwargs: client)
     monkeypatch.setattr(cli, "SystemClock", lambda: FixedClock())
 
     code = cli.main(

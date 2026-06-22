@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .thread_context import CardTitleContext, format_card_title
+
 
 def completion_card(
     *,
@@ -14,6 +16,7 @@ def completion_card(
     footer_cwd: str | None = None,
     now: datetime | str | None = None,
     title_suffix: str = "",
+    title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
     fields = dict(fields)
     footer_cwd = footer_cwd or _pop_workdir(fields)
@@ -24,10 +27,16 @@ def completion_card(
     if footer_cwd:
         footer_parts.append(f"工作目录：{footer_cwd}")
     footer_parts.append(footer_mode_text)
-    return _card(_title_with_project(title, project, title_suffix), [*body, _footer_note(footer_parts)])
+    return _card(_card_title(title, project, title_suffix, title_context), [*body, _footer_note(footer_parts)])
 
 
-def fallback_completion_card(*, reason: str, cwd: str, now: datetime | str) -> dict[str, Any]:
+def fallback_completion_card(
+    *,
+    reason: str,
+    cwd: str,
+    now: datetime | str,
+    title_context: CardTitleContext | None = None,
+) -> dict[str, Any]:
     project = _project_from_cwd(cwd)
     return completion_card(
         title="Codex 回合已停止",
@@ -41,6 +50,7 @@ def fallback_completion_card(*, reason: str, cwd: str, now: datetime | str) -> d
         footer_mode_text=notification_mode_footer_text("all"),
         now=now,
         title_suffix="（无摘要）",
+        title_context=title_context,
     )
 
 
@@ -86,7 +96,12 @@ def summary_sections(markdown: str) -> dict[str, str]:
     }
 
 
-def away_card(*, context: dict[str, Any], deadline: datetime | str) -> dict[str, Any]:
+def away_card(
+    *,
+    context: dict[str, Any],
+    deadline: datetime | str,
+    title_context: CardTitleContext | None = None,
+) -> dict[str, Any]:
     project = context.get("project", "Codex Away Mode")
     lines = [
         f"项目：{project}",
@@ -97,7 +112,7 @@ def away_card(*, context: dict[str, Any], deadline: datetime | str) -> dict[str,
         "可用命令：/延长等待、/状态、/结束等待。",
     ]
     return _card(
-        "Codex Away Mode 等待中",
+        _card_title("Codex Away Mode 等待中", None, "", title_context),
         [_markdown("\n".join(lines)), _note("模式：Away Mode")],
         template="purple",
     )
@@ -108,9 +123,10 @@ def pre_timeout_reminder_card(
     project: str,
     deadline: datetime | str,
     minutes_left: int = 5,
+    title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
     return _card(
-        "Away Mode 即将超时",
+        _card_title("Away Mode 即将超时", None, "", title_context),
         [
             _markdown(
                 f"{project} 还有 {minutes_left} 分钟会超时。\n"
@@ -124,9 +140,14 @@ def pre_timeout_reminder_card(
     )
 
 
-def timeout_card(*, project: str, deadline: datetime | str) -> dict[str, Any]:
+def timeout_card(
+    *,
+    project: str,
+    deadline: datetime | str,
+    title_context: CardTitleContext | None = None,
+) -> dict[str, Any]:
     return _card(
-        "Away Mode 已超时",
+        _card_title("Away Mode 已超时", None, "", title_context),
         [
             _markdown(
                 f"{project} 的回复窗口已关闭。\n"
@@ -139,9 +160,14 @@ def timeout_card(*, project: str, deadline: datetime | str) -> dict[str, Any]:
     )
 
 
-def user_ended_card(*, project: str, ended_at: datetime | str) -> dict[str, Any]:
+def user_ended_card(
+    *,
+    project: str,
+    ended_at: datetime | str,
+    title_context: CardTitleContext | None = None,
+) -> dict[str, Any]:
     return _card(
-        f"Away Mode 已结束 - {project}",
+        _card_title("Away Mode 已结束", project, "", title_context),
         [
             _markdown(
                 f"{project} 的回复窗口已关闭。\n"
@@ -183,6 +209,7 @@ def away_progress_card(
     unverified: str,
     need_user: str,
     deadline: datetime | str,
+    title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
     lines = [
         f"项目：{project}",
@@ -195,7 +222,7 @@ def away_progress_card(
         "旧卡已失效，请回复这张最新卡片继续当前 Codex 回合。",
     ]
     return _card(
-        f"Codex Away Mode 进度 - {project}",
+        _card_title("Codex Away Mode 进度", project, "", title_context),
         [_markdown("\n".join(lines)), _note(f"工作目录：{cwd}\n模式：Away Mode")],
         template="purple",
     )
@@ -211,6 +238,7 @@ def away_early_exit_card(
     unverified: str,
     need_user: str,
     stopped_at: datetime | str,
+    title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
     lines = [
         f"项目：{project}",
@@ -224,7 +252,7 @@ def away_early_exit_card(
         "如需继续，请回到 Codex 重新发起指令或重新开启 Away Mode。",
     ]
     return _card(
-        "Codex 已停止 - Away Mode 已结束",
+        _card_title("Codex 已停止 - Away Mode 已结束", None, "", title_context),
         [_markdown("\n".join(lines)), _note(f"工作目录：{cwd}\n模式：Away Mode 已结束")],
         template="red",
     )
@@ -290,6 +318,17 @@ def _title_with_project(title: str, project: str | None, title_suffix: str = "")
     if project:
         return f"{title} - {project}{title_suffix}"
     return f"{title}{title_suffix}"
+
+
+def _card_title(
+    title: str,
+    project: str | None,
+    title_suffix: str,
+    title_context: CardTitleContext | None,
+) -> str:
+    if title_context is not None:
+        return format_card_title(title, title_context) + title_suffix
+    return _title_with_project(title, project, title_suffix)
 
 
 def _display_time(value: datetime | str) -> str:
