@@ -102,20 +102,112 @@ def away_card(
     deadline: datetime | str,
     title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
-    project = context.get("project", "Codex Away Mode")
-    lines = [
-        f"项目：{project}",
-        f"任务：{context.get('task', '等待飞书回复')}",
-        f"工作目录：{context.get('cwd', '未提供')}",
-        f"截止时间：{away_time(deadline)}",
-        "请回复这张卡片，普通私聊不会进入这个 Codex 回合。",
-        "可用命令：/延长等待、/状态、/结束等待。",
-    ]
-    return _card(
-        _card_title("Codex Away Mode 等待中", None, "", title_context),
-        [_markdown("\n".join(lines)), _note("模式：Away Mode")],
+    cwd = str(context.get("cwd") or "未提供")
+    return _away_card(
+        title=_away_identity_title(
+            title_context=title_context,
+            fallback_project=str(context.get("project") or "Codex Away Mode"),
+        ),
+        subtitle="Codex Away Mode：已进入 Away Mode，正在等待你的回复",
+        status_label="等待中",
+        status_color="wathet",
         template="purple",
+        elements=[
+            _markdown("**本轮进度**\n已按你的要求进入 Away Mode。Codex 会在回复窗口内等待飞书卡片回复。"),
+            _highlight_box(
+                "普通私聊不会进入当前 Codex 回合；请直接回复这张卡片发送下一条指令。",
+            ),
+            _away_footer(deadline=deadline, cwd=cwd),
+        ],
     )
+
+
+def _highlight_box(detail: str) -> dict[str, Any]:
+    content = "\n".join(
+        [
+            "**需要你看**",
+            detail.strip() or "请回复这张卡片继续。",
+            "",
+            "**请回复这张卡片继续**",
+        ]
+    )
+    return {
+        "tag": "column_set",
+        "background_style": "grey",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [_markdown(content)],
+            }
+        ],
+    }
+
+
+def _away_footer(*, deadline: datetime | str, cwd: str) -> dict[str, Any]:
+    lines = [
+        f"**回复窗口将于 {_display_time(deadline)} 关闭，请在此之前回复**",
+        "可用命令：/延长等待、/状态、/结束等待",
+        f"工作目录：{cwd}",
+    ]
+    return _markdown("\n".join(f"> {line}" for line in lines))
+
+
+def _away_card(
+    *,
+    title: str,
+    subtitle: str,
+    status_label: str,
+    status_color: str,
+    template: str,
+    elements: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "subtitle": {"tag": "plain_text", "content": subtitle},
+            "template": template,
+            "text_tag_list": [
+                {
+                    "tag": "text_tag",
+                    "text": {"tag": "plain_text", "content": status_label},
+                    "color": status_color,
+                }
+            ],
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _away_identity_title(
+    *,
+    title_context: CardTitleContext | None,
+    fallback_project: str | None,
+) -> str:
+    thread = _compact_title_part(title_context.thread_title if title_context else None)
+    project = _compact_title_part(title_context.project_name if title_context else None)
+    fallback = _compact_title_part(fallback_project)
+    if not project:
+        project = fallback
+    if thread and project and thread != project:
+        return f"{thread} / {project}"
+    if thread:
+        return thread
+    if project:
+        return project
+    return "Codex Away Mode"
+
+
+def _compact_title_part(value: str | None) -> str | None:
+    cleaned = " ".join(str(value or "").split())
+    if not cleaned:
+        return None
+    if len(cleaned) > 40:
+        return cleaned[:40] + "…"
+    return cleaned
 
 
 def pre_timeout_reminder_card(
@@ -125,18 +217,20 @@ def pre_timeout_reminder_card(
     minutes_left: int = 5,
     title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
-    return _card(
-        _card_title("Away Mode 即将超时", None, "", title_context),
-        [
-            _markdown(
-                f"{project} 还有 {minutes_left} 分钟会超时。\n"
-                f"截止时间：{away_time(deadline)}\n"
-                "如需继续等待，请回复这张卡片发送 /延长等待。\n"
-                "超时后，飞书回复将无法送达这个 Codex 回合。"
-            ),
-            _note("模式：Away Mode"),
-        ],
+    return _away_card(
+        title=f"回复窗口还有 {minutes_left} 分钟关闭 - Codex Away Mode",
+        subtitle=_away_identity_title(title_context=title_context, fallback_project=project),
+        status_label="即将超时",
+        status_color="orange",
         template="orange",
+        elements=[
+            _markdown(
+                "**本任务的飞书等待窗口即将超时关闭**\n"
+                "如需继续，请回复这张卡片发送 `/延长等待`\n"
+                "或者直接回复 `把等待时间延长1个小时`"
+            ),
+            _markdown("超时后，你将无法继续在飞书中给 Codex 继续下达任务指令"),
+        ],
     )
 
 
@@ -146,17 +240,19 @@ def timeout_card(
     deadline: datetime | str,
     title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
-    return _card(
-        _card_title("Away Mode 已超时", None, "", title_context),
-        [
-            _markdown(
-                f"{project} 的回复窗口已关闭。\n"
-                f"关闭时间：{away_time(deadline)}\n"
-                "后续飞书消息不能到达这个 Codex 回合。"
-            ),
-            _note("模式：Away Mode 已结束；需要继续请回到 Codex 发起新指令。"),
-        ],
+    return _away_card(
+        title="回复窗口已超时关闭 - Codex Away Mode",
+        subtitle=_away_identity_title(title_context=title_context, fallback_project=project),
+        status_label="已超时",
+        status_color="red",
         template="red",
+        elements=[
+            _markdown(
+                "**本任务的飞书等待窗口已超时关闭**\n"
+                "你已无法继续在飞书中给 Codex 下达任务指令。\n"
+                "如需继续，请回到桌面端重新开启 Codex Away Mode。"
+            ),
+        ],
     )
 
 
@@ -166,17 +262,19 @@ def user_ended_card(
     ended_at: datetime | str,
     title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
-    return _card(
-        _card_title("Away Mode 已结束", project, "", title_context),
-        [
-            _markdown(
-                f"{project} 的回复窗口已关闭。\n"
-                f"结束时间：{away_time(ended_at)}\n"
-                "Codex 会继续完成本轮收尾；后续飞书消息不能到达这个 Codex 回合。"
-            ),
-            _note("模式：Away Mode 已结束；需要继续请回到 Codex 发起新指令。"),
-        ],
+    return _away_card(
+        title="回复窗口已结束 - Codex Away Mode",
+        subtitle=_away_identity_title(title_context=title_context, fallback_project=project),
+        status_label="已结束",
+        status_color="green",
         template="green",
+        elements=[
+            _markdown(
+                "**本任务的飞书等待窗口已关闭**\n"
+                "Codex 会继续完成本轮收尾。\n"
+                "收尾完成后，会通过普通完成通知告诉你结果。"
+            ),
+        ],
     )
 
 
@@ -211,21 +309,25 @@ def away_progress_card(
     deadline: datetime | str,
     title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
-    lines = [
-        f"项目：{project}",
-        f"完成：{completed}",
-        f"变更：{changed}",
-        f"验证：{verification}",
-        f"未验证：{unverified}",
-        f"需要你看：{need_user}",
-        f"截止时间：{away_time(deadline)}",
-        "旧卡已失效，请回复这张最新卡片继续当前 Codex 回合。",
-    ]
-    return _card(
-        _card_title("Codex Away Mode 进度", project, "", title_context),
-        [_markdown("\n".join(lines)), _note(f"工作目录：{cwd}\n模式：Away Mode")],
+    return _away_card(
+        title=_away_identity_title(title_context=title_context, fallback_project=project),
+        subtitle="Codex Away Mode：已处理上一条回复，正在等待下一步",
+        status_label="等待中",
+        status_color="wathet",
         template="purple",
+        elements=[
+            _markdown(f"**本轮进度**\n{_progress_detail(completed)}"),
+            _highlight_box(need_user),
+            _away_footer(deadline=deadline, cwd=cwd),
+        ],
     )
+
+
+def _progress_detail(completed: str) -> str:
+    value = str(completed or "").strip()
+    if value and value not in {"无", "未知", "未提供"}:
+        return value
+    return "已处理上一条回复，正在等待你的下一步指令。"
 
 
 def away_early_exit_card(

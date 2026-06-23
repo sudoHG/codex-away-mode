@@ -533,7 +533,7 @@ def _validate_away_wait_args(args):
         if extend_minutes is not None and extend_minutes <= 0:
             raise SystemExit(2)
         return
-    required = ["project", "cwd", "task", "wait_minutes", "poll_interval"]
+    required = ["project", "cwd", "task", "wait_minutes"]
     missing = [name for name in required if getattr(args, name) is None]
     if missing:
         raise SystemExit(2)

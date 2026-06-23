@@ -44,6 +44,18 @@ def test_guidance_block_is_idempotent_and_mentions_contract():
     assert "After completing that reply_text work, write the result or answer in the Codex chat before calling away resume" in once
 
 
+def test_guidance_block_uses_managed_cli_command():
+    content = hooks.install_guidance_block(
+        "",
+        cli_command="/managed/bin/codex-away-mode",
+    )
+
+    assert "`/managed/bin/codex-away-mode notify stage-summary --cwd \"$PWD\" --json`" in content
+    assert "use `/managed/bin/codex-away-mode away start ... --json`" in content
+    assert "call `/managed/bin/codex-away-mode away resume \"$away_session_id\" --resume-token \"$resume_token\"`" in content
+    assert "`codex-away-mode notify stage-summary" not in content
+
+
 def test_install_hooks_preserves_existing_groups_and_backs_up(tmp_path):
     hooks_path = tmp_path / "hooks.json"
     backup_dir = tmp_path / "backups"

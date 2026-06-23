@@ -75,8 +75,9 @@ def test_skill_and_usage_docs_use_quick_start_and_token_resume_contract():
     assert "Never resume an Away Session discovered from" in skill
     assert "away status" in skill
     assert "doctor --route-probe verifies exact routing" not in skill
-    assert "codex-away-mode away start" in usage
-    assert "codex-away-mode away resume" in usage
+    assert "CODEX_AWAY_CLI=" in usage
+    assert '"$CODEX_AWAY_CLI" away start' in usage
+    assert '"$CODEX_AWAY_CLI" away resume' in usage
     assert "--resume-token" in usage
     assert "--extend-minutes" in skill
     assert "--extend-minutes" in usage

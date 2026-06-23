@@ -51,6 +51,53 @@ def note_texts(card):
     return texts
 
 
+def card_tags(value):
+    tags = []
+    if isinstance(value, dict):
+        tag = value.get("tag")
+        if isinstance(tag, str):
+            tags.append(tag)
+        for item in value.values():
+            tags.extend(card_tags(item))
+    elif isinstance(value, list):
+        for item in value:
+            tags.extend(card_tags(item))
+    return tags
+
+
+def header_tag_texts(card):
+    texts = []
+    for item in card["header"].get("text_tag_list", []):
+        text = item.get("text", {})
+        if isinstance(text, dict):
+            texts.append(text.get("content"))
+    return texts
+
+
+def body_markdown_contents(card):
+    return [
+        element.get("content", "")
+        for element in card["body"]["elements"]
+        if element.get("tag") == "markdown"
+    ]
+
+
+def assert_away_card_v2(card):
+    assert card["schema"] == "2.0"
+    assert "elements" not in card
+    assert isinstance(card["body"]["elements"], list)
+    assert "interactive_container" not in card_tags(card)
+
+
+def assert_quoted_away_footer(card, *, deadline="18:30", cwd="/workspace/project"):
+    footer = body_markdown_contents(card)[-1]
+    assert footer.splitlines() == [
+        f"> **回复窗口将于 {deadline} 关闭，请在此之前回复**",
+        "> 可用命令：/延长等待、/状态、/结束等待",
+        f"> 工作目录：{cwd}",
+    ]
+
+
 def test_completion_card_title_includes_project_and_compact_footer(monkeypatch):
     set_local_timezone(monkeypatch, "Asia/Shanghai")
     card = completion_card(
@@ -162,14 +209,27 @@ def test_away_card_lists_supported_commands_and_local_deadline(monkeypatch):
             "cwd": "/workspace/project",
         },
         deadline=datetime(2026, 6, 18, 10, 30, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(
+            project_name="project",
+            thread_title="建立 Skill-Create 基线",
+        ),
     )
 
     text = flatten_text(card)
+    assert_away_card_v2(card)
+    assert card["header"]["title"]["content"] == "建立 Skill-Create 基线 / project"
+    assert card["header"]["subtitle"]["content"] == "Codex Away Mode：已进入 Away Mode，正在等待你的回复"
+    assert header_tag_texts(card) == ["等待中"]
     assert card["header"]["template"] == "purple"
     assert "/延长等待" in text
     assert "/状态" in text
     assert "/结束等待" in text
-    assert "截止时间：06-18 18:30" in text
+    assert "**本轮进度**" in text
+    assert "已按你的要求进入 Away Mode" in text
+    assert "**需要你看**" in text
+    assert "**请回复这张卡片继续**" in text
+    assert_quoted_away_footer(card)
+    assert "截止时间：" not in text
     assert "UTC" not in text
     assert "2026-" not in text
     assert "回复这张卡片" in text
@@ -183,17 +243,28 @@ def test_pre_timeout_reminder_card_mentions_five_minutes_extend_and_closed_deliv
         project="Away Mode",
         deadline=datetime(2026, 6, 18, 10, 30, tzinfo=timezone.utc),
         minutes_left=5,
+        title_context=cards.CardTitleContext(
+            project_name="project",
+            thread_title="建立 Skill-Create 基线",
+        ),
     )
 
     text = flatten_text(card)
+    assert_away_card_v2(card)
+    assert card["header"]["title"]["content"] == "回复窗口还有 5 分钟关闭 - Codex Away Mode"
+    assert card["header"]["subtitle"]["content"] == "建立 Skill-Create 基线 / project"
+    assert header_tag_texts(card) == ["即将超时"]
     assert card["header"]["template"] == "orange"
     assert "5 分钟" in text
     assert "/延长等待" in text
-    assert "截止时间：06-18 18:30" in text
+    assert "本任务的飞书等待窗口即将超时关闭" in text
+    assert "如需继续，请回复这张卡片发送 `/延长等待`" in text
+    assert "或者直接回复 `把等待时间延长1个小时`" in text
+    assert "超时后，你将无法继续在飞书中给 Codex 继续下达任务指令" in text
+    assert "截止时间：" not in text
+    assert "工作目录" not in text
     assert "UTC" not in text
     assert "2026-" not in text
-    assert "超时后" in text
-    assert "无法送达这个 Codex 回合" in text
     assert "CODEX_HOME" not in text
     assert "config.toml" not in text
 
@@ -203,16 +274,25 @@ def test_timeout_card_says_reply_window_is_closed_with_local_time(monkeypatch):
     card = timeout_card(
         project="Away Mode",
         deadline=datetime(2026, 6, 18, 10, 30, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(
+            project_name="project",
+            thread_title="建立 Skill-Create 基线",
+        ),
     )
 
     text = flatten_text(card)
+    assert_away_card_v2(card)
+    assert card["header"]["title"]["content"] == "回复窗口已超时关闭 - Codex Away Mode"
+    assert card["header"]["subtitle"]["content"] == "建立 Skill-Create 基线 / project"
+    assert header_tag_texts(card) == ["已超时"]
     assert card["header"]["template"] == "red"
-    assert "回复窗口已关闭" in text
-    assert "关闭时间：06-18 18:30" in text
+    assert "本任务的飞书等待窗口已超时关闭" in text
+    assert "你已无法继续在飞书中给 Codex 下达任务指令。" in text
+    assert "如需继续，请回到桌面端重新开启 Codex Away Mode。" in text
+    assert "关闭时间：" not in text
+    assert "工作目录" not in text
     assert "UTC" not in text
     assert "2026-" not in text
-    assert "后续飞书消息" in text
-    assert "不能到达这个 Codex 回合" in text
 
 
 def test_user_ended_card_says_away_mode_closed_and_normal_wrap_up_can_continue(monkeypatch):
@@ -220,14 +300,23 @@ def test_user_ended_card_says_away_mode_closed_and_normal_wrap_up_can_continue(m
     card = cards.user_ended_card(
         project="Away Mode",
         ended_at=datetime(2026, 6, 18, 10, 30, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(
+            project_name="project",
+            thread_title="建立 Skill-Create 基线",
+        ),
     )
 
     text = flatten_text(card)
-    assert card["header"]["title"]["content"] == "Away Mode 已结束 - Away Mode"
+    assert_away_card_v2(card)
+    assert card["header"]["title"]["content"] == "回复窗口已结束 - Codex Away Mode"
+    assert card["header"]["subtitle"]["content"] == "建立 Skill-Create 基线 / project"
+    assert header_tag_texts(card) == ["已结束"]
     assert card["header"]["template"] == "green"
-    assert "回复窗口已关闭" in text
-    assert "结束时间：06-18 18:30" in text
-    assert "Codex 会继续完成本轮收尾" in text
+    assert "本任务的飞书等待窗口已关闭" in text
+    assert "Codex 会继续完成本轮收尾。" in text
+    assert "收尾完成后，会通过普通完成通知告诉你结果。" in text
+    assert "结束时间：" not in text
+    assert "工作目录" not in text
     assert "UTC" not in text
     assert "2026-" not in text
 
@@ -297,12 +386,20 @@ def test_progress_and_early_exit_cards_exist_and_use_away_time(monkeypatch):
 
     progress_text = flatten_text(progress)
     early_exit_text = flatten_text(early_exit)
-    assert "Codex Away Mode 进度" in progress["header"]["title"]["content"]
+    assert_away_card_v2(progress)
+    assert progress["header"]["title"]["content"] == "Demo"
+    assert progress["header"]["subtitle"]["content"] == "Codex Away Mode：已处理上一条回复，正在等待下一步"
+    assert header_tag_texts(progress) == ["等待中"]
     assert progress["header"]["template"] == "purple"
+    assert "**本轮进度**" in progress_text
     assert "已完成分析" in progress_text
-    assert "截止时间：06-18 18:30" in progress_text
-    assert "旧卡" in progress_text
-    assert "最新卡片" in progress_text
+    assert "变更：" not in progress_text
+    assert "验证：" not in progress_text
+    assert "未验证：" not in progress_text
+    assert "**需要你看**" in progress_text
+    assert "请回 Codex 重新开启 Away Mode" not in progress_text
+    assert "**请回复这张卡片继续**" in progress_text
+    assert_quoted_away_footer(progress, cwd="/workspace/demo")
     assert early_exit["header"]["title"]["content"] == "Codex 已停止 - Away Mode 已结束"
     assert early_exit["header"]["template"] == "red"
     assert "Away Mode 回复窗口已关闭" in early_exit_text

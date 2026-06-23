@@ -5,7 +5,8 @@
 A Codex agent should stage a short final-turn summary through the CLI:
 
 ```bash
-codex-away-mode notify stage-summary --cwd "$PWD" --json <<'EOF'
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --json <<'EOF'
 **项目**
 Demo
 
@@ -26,17 +27,19 @@ If the summary is missing, the hook sends a no-summary fallback only when all of
 Hook commands:
 
 ```bash
-codex-away-mode notify mark-prompt --json
-codex-away-mode notify stage-summary --cwd "$PWD" --json
-codex-away-mode notify stop --json
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" notify mark-prompt --json
+"$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --json
+"$CODEX_AWAY_CLI" notify stop --json
 ```
 
 Notification mode:
 
 ```bash
-codex-away-mode notify mode all
-codex-away-mode notify mode off
-codex-away-mode notify snooze 2h
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" notify mode all
+"$CODEX_AWAY_CLI" notify mode off
+"$CODEX_AWAY_CLI" notify snooze 2h
 ```
 
 Default mode is `all`. Completion card titles should include the project name when available. Footer text should keep operational metadata out of the body in one compact note with no blank lines. Show time as local `HH:MM` only. Include the workspace cwd when useful. User-facing cards should say that the user can tell Codex in natural language, using wording like `告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」`; do not show `config.toml`, `CODEX_HOME`, UTC offsets, dates, or raw CLI commands in routine notification cards. The CLI commands above are for Codex/installer execution, not the main user instruction text.
@@ -45,7 +48,7 @@ Default mode is `all`. Completion card titles should include the project name wh
 
 Start Away Mode only when the user explicitly asks for it. Do not infer it from ordinary work.
 
-If the user says "开启 Away Mode", "开启 codex-away-mode", "我要离开电脑", or similar, start a new Away Session immediately with `codex-away-mode away start ... --json`.
+If the user says "开启 Away Mode", "开启 codex-away-mode", "我要离开电脑", or similar, start a new Away Session immediately with `"${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode" away start ... --json`.
 
 Do not run `doctor --json`, `doctor --route-probe`, or `away status` as a prerequisite for normal startup. Let `away start` return a structured error if local config or Feishu binding is missing.
 
@@ -58,7 +61,8 @@ When a routed card reply arrives, the desktop Codex thread must keep a concise t
 Example:
 
 ```bash
-codex-away-mode away start \
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" away start \
   --project Demo \
   --cwd /workspace/demo \
   --task "实现功能" \
@@ -82,7 +86,8 @@ The CLI blocks until one wait-cycle result is available:
 Resume after handling a Feishu reply:
 
 ```bash
-codex-away-mode away resume sess_... \
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" away resume sess_... \
   --resume-token rt_... \
   --completed "上一条飞书回复已处理" \
   --changed "无" \
@@ -98,7 +103,8 @@ Resume first drains queued card replies that arrived while Codex was processing.
 If the routed reply is a natural-language request such as "把等待时间延长 3 个小时", the agent should parse the duration, complete any short confirmation work, then resume with an explicit extension:
 
 ```bash
-codex-away-mode away resume sess_... \
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" away resume sess_... \
   --resume-token rt_... \
   --extend-minutes 180 \
   --completed "已按用户要求延长等待时间" \
@@ -127,8 +133,9 @@ Ordinary Feishu private-chat messages are not prompts. The user must reply to th
 Use cleanup only for diagnostics or stale runtime repair:
 
 ```bash
-codex-away-mode away cleanup --dry-run --json
-codex-away-mode away cleanup --json
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" away cleanup --dry-run --json
+"$CODEX_AWAY_CLI" away cleanup --json
 ```
 
 The command only closes Away Sessions that are already past their deadline and have no live waiter lease. It does not send Feishu cards and does not replace the normal timeout path. Run `away cleanup --dry-run --json` first, then run the non-dry-run command only when the stale sessions are expected leftovers from tests, crashes, or interrupted validation.

@@ -688,6 +688,56 @@ def test_away_start_parser_uses_explicit_start_command():
     assert args.project == "Test Project"
 
 
+def test_away_start_uses_default_poll_interval_when_omitted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CODEX_AWAY_HOME", str(tmp_path / "away-home"))
+    paths = RuntimePaths.from_environment()
+    save_config(
+        paths.config_path,
+        AppConfig(feishu_chat_id="oc_chat", lark_cli_path="/bin/echo"),
+    )
+    captured = {}
+
+    class FakeAwayWaiter:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs["config"]
+
+        def wait(self, context):
+            captured["context"] = context
+            return {"status": "timeout", "keep_waiting": False}
+
+    monkeypatch.setattr(cli, "AwayWaiter", FakeAwayWaiter)
+
+    code, captured_output = run_cli(
+        capsys,
+        "away",
+        "start",
+        "--project",
+        "Test Project",
+        "--cwd",
+        "/tmp/project",
+        "--task",
+        "implement",
+        "--completed",
+        "done",
+        "--changed",
+        "none",
+        "--verification",
+        "pytest",
+        "--unverified",
+        "none",
+        "--need-user",
+        "none",
+        "--wait-minutes",
+        "30",
+        "--json",
+    )
+
+    assert code == 0
+    assert parse_stdout(captured_output) == {"status": "timeout", "keep_waiting": False}
+    assert captured["config"].poll_interval_seconds == 5
+    assert captured["context"]["wait_minutes"] == 30
+
+
 def test_away_resume_parser_requires_token_shape():
     parser = cli.build_parser()
     args = parser.parse_args(

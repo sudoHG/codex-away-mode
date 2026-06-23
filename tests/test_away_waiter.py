@@ -175,9 +175,11 @@ def test_initial_away_card_title_uses_programmatic_context_not_project_arg(tmp_p
     )
 
     assert result["status"] == "reply"
-    title = lark.sent_cards[0]["card"]["header"]["title"]["content"]
-    assert title == "Codex Away Mode 等待中 - Skill-Create / 建立 Skill-Create 基线"
-    assert "Agent 传错的项目名" not in title
+    header = lark.sent_cards[0]["card"]["header"]
+    assert header["title"]["content"] == "建立 Skill-Create 基线 / Skill-Create"
+    assert header["subtitle"]["content"] == "Codex Away Mode：已进入 Away Mode，正在等待你的回复"
+    assert header["text_tag_list"][0]["text"]["content"] == "等待中"
+    assert "Agent 传错的项目名" not in str(header)
 
 
 def test_timeout_away_card_title_uses_programmatic_context(tmp_path, monkeypatch):
@@ -204,9 +206,11 @@ def test_timeout_away_card_title_uses_programmatic_context(tmp_path, monkeypatch
     )
 
     assert result["status"] == "timeout"
-    title = lark.sent_cards[-1]["card"]["header"]["title"]["content"]
-    assert title == "Away Mode 已超时 - Skill-Create / 建立 Skill-Create 基线"
-    assert "Agent 传错的项目名" not in title
+    header = lark.sent_cards[-1]["card"]["header"]
+    assert header["title"]["content"] == "回复窗口已超时关闭 - Codex Away Mode"
+    assert header["subtitle"]["content"] == "建立 Skill-Create 基线 / Skill-Create"
+    assert header["text_tag_list"][0]["text"]["content"] == "已超时"
+    assert "Agent 传错的项目名" not in str(header)
 
 
 def test_prompt_delivery_pauses_window_and_returns_resume_contract(tmp_path):
@@ -609,7 +613,8 @@ def test_end_command_sends_feedback_closes_window_and_returns_ended_without_repl
     assert any("/结束等待" in item["text"] for item in lark.sent_texts)
     assert len(lark.sent_cards) == 2
     end_card_text = str(lark.sent_cards[-1]["card"])
-    assert "Away Mode 已结束" in end_card_text
+    assert "回复窗口已结束 - Codex Away Mode" in end_card_text
+    assert "已结束" in end_card_text
     assert "Codex 会继续完成本轮收尾" in end_card_text
 
 

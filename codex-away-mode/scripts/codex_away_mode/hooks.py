@@ -20,20 +20,20 @@ def managed_user_prompt_command(cli_command: str) -> str:
     return f"{cli_command} notify mark-prompt --json"
 
 
-def install_guidance_block(content: str) -> str:
+def install_guidance_block(content: str, *, cli_command: str = "codex-away-mode") -> str:
     block = (
         f"{GUIDANCE_START}\n"
         "## Codex Away Mode\n\n"
-        "Before a user-visible completed turn, stage the completion summary by running `codex-away-mode notify stage-summary --cwd \"$PWD\" --json` and passing the summary markdown on stdin.\n"
+        f"Before a user-visible completed turn, stage the completion summary by running `{cli_command} notify stage-summary --cwd \"$PWD\" --json` and passing the summary markdown on stdin.\n"
         "Do not write Codex Away Mode summary, marker, state, or runtime files under the current workspace cwd.\n"
         "Do not write this summary for in-progress goal-mode continuation turns; wait until the goal is complete, blocked, or needs human attention.\n"
         "If the summary is missing, the Stop hook may send a missing summary fallback only when a fresh user prompt marker exists and the transcript goal status is not active.\n"
         "Away Mode wait contract: after sending an Away Mode checkpoint, wait for the configured reply window and only continue from a routed card reply.\n"
-        "When the user asks to start Away Mode or says they are leaving the computer, use `codex-away-mode away start ... --json`. Do not run doctor, route probes, or away status first.\n"
+        f"When the user asks to start Away Mode or says they are leaving the computer, use `{cli_command} away start ... --json`. Do not run doctor, route probes, or away status first.\n"
         "During active Away Mode polling, keep the Codex chat quiet: do not send heartbeat or waiting-status updates; only send user-visible updates when a routed card reply arrives, the wait ends, times out, errors, or requires user action.\n"
         "When a routed card reply arrives, write a concise Codex chat note that includes the received Feishu text and the action or answer you are about to give.\n"
         "After completing that reply_text work, write the result or answer in the Codex chat before calling away resume, so the desktop thread has an auditable trace of the remote interaction.\n"
-        "When `away start` or `away resume` returns `status=reply` with `keep_waiting=true` and `resume_token`, treat `reply_text` as the next user prompt, complete that work, then call `codex-away-mode away resume \"$away_session_id\" --resume-token \"$resume_token\"` with updated progress fields unless the user ended the session or the task is stopping.\n"
+        f"When `away start` or `away resume` returns `status=reply` with `keep_waiting=true` and `resume_token`, treat `reply_text` as the next user prompt, complete that work, then call `{cli_command} away resume \"$away_session_id\" --resume-token \"$resume_token\"` with updated progress fields unless the user ended the session or the task is stopping.\n"
         "If the user asks in natural language to extend the current Away Mode wait, convert the duration to minutes and pass `--extend-minutes <minutes>` on the next `away resume` call; do not read or write Away Mode SQLite/StateStore directly.\n"
         "Never call `away wait --resume <away_session_id>` or `away resume <away_session_id>` without a resume token. Never resume a session discovered from `away status`.\n"
         "Do not claim the turn is complete while an Away Session is still active.\n"

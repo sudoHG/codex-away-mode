@@ -28,7 +28,7 @@ For installation, permissions, hook trust, and verification, read `references/in
 If the local hook contract is installed, stage final-turn summaries through the CLI:
 
 ```bash
-codex-away-mode notify stage-summary --cwd "$PWD" --json
+"${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode" notify stage-summary --cwd "$PWD" --json
 ```
 
 Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-summary.md`, prompt markers, state databases, or any other Codex Away Mode runtime files under the current workspace cwd. The Stop hook reads the staged summary from the central runtime store by `cwd_hash`. If the summary is missing, the Stop hook sends a no-summary fallback only when a fresh user prompt marker exists and the current transcript does not show an active goal. For in-progress goal-mode continuation turns, do not stage a completion summary until the goal is complete, blocked, or needs human attention; active goal turns must not create fallback noise.

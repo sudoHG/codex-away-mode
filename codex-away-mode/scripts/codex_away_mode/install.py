@@ -227,8 +227,9 @@ def run_install(
         agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
     )
     _backup_existing(agents_path, paths.backup_dir)
+    managed_cli_command = cli_command or str(wrapper_path)
     agents_path.write_text(
-        hooks.install_guidance_block(existing_guidance),
+        hooks.install_guidance_block(existing_guidance, cli_command=managed_cli_command),
         encoding="utf-8",
     )
     changed.append(str(agents_path))
@@ -236,7 +237,7 @@ def run_install(
     hooks.install_hooks(
         hooks_path=paths.hooks_json,
         backup_dir=paths.backup_dir,
-        cli_command=cli_command or str(wrapper_path),
+        cli_command=managed_cli_command,
     )
     _invalidate_e2e_notify_if_verified(store)
     changed.append(str(paths.hooks_json))
