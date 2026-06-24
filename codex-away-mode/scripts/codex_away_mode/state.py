@@ -112,6 +112,20 @@ class StateStore:
                     diagnostic_json TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS approval_notifications (
+                    dedupe_key TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    turn_id TEXT,
+                    cwd_hash TEXT,
+                    tool_name TEXT,
+                    command_hash TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    sent_at TEXT,
+                    suppressed_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS away_sessions (
                     session_id TEXT PRIMARY KEY,
                     project TEXT NOT NULL,
@@ -1386,6 +1400,114 @@ class StateStore:
             },
         )
 
+    def reserve_approval_notification(
+        self,
+        *,
+        dedupe_key: str,
+        session_id: str | None,
+        turn_id: str | None,
+        cwd: str | None,
+        tool_name: str,
+        command_hash: str,
+        seen_at: str,
+        throttle_seconds: int,
+    ) -> dict[str, Any]:
+        cwd_hash = self.cwd_hash(cwd or "")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM approval_notifications WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+            existing = self._row_to_dict(row)
+            if existing and _seconds_between(existing.get("last_seen_at"), seen_at) <= throttle_seconds:
+                suppressed_count = int(existing.get("suppressed_count") or 0) + 1
+                conn.execute(
+                    """
+                    UPDATE approval_notifications
+                    SET last_seen_at = ?, suppressed_count = ?, status = ?
+                    WHERE dedupe_key = ?
+                    """,
+                    (seen_at, suppressed_count, "suppressed", dedupe_key),
+                )
+                conn.execute("COMMIT")
+                existing["last_seen_at"] = seen_at
+                existing["suppressed_count"] = suppressed_count
+                existing["status"] = "suppressed"
+                return existing
+
+            conn.execute(
+                """
+                INSERT INTO approval_notifications (
+                    dedupe_key, session_id, turn_id, cwd_hash, tool_name,
+                    command_hash, first_seen_at, last_seen_at, sent_at,
+                    suppressed_count, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)
+                ON CONFLICT(dedupe_key) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    turn_id = excluded.turn_id,
+                    cwd_hash = excluded.cwd_hash,
+                    tool_name = excluded.tool_name,
+                    command_hash = excluded.command_hash,
+                    first_seen_at = excluded.first_seen_at,
+                    last_seen_at = excluded.last_seen_at,
+                    sent_at = NULL,
+                    suppressed_count = 0,
+                    status = excluded.status
+                """,
+                (
+                    dedupe_key,
+                    session_id,
+                    turn_id,
+                    cwd_hash,
+                    tool_name,
+                    command_hash,
+                    seen_at,
+                    seen_at,
+                    "reserved",
+                ),
+            )
+            conn.execute("COMMIT")
+        return {
+            "dedupe_key": dedupe_key,
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "cwd_hash": cwd_hash,
+            "tool_name": tool_name,
+            "command_hash": command_hash,
+            "first_seen_at": seen_at,
+            "last_seen_at": seen_at,
+            "sent_at": None,
+            "suppressed_count": 0,
+            "status": "reserved",
+        }
+
+    def mark_approval_notification_result(
+        self,
+        dedupe_key: str,
+        *,
+        status: str,
+        sent_at: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE approval_notifications
+                SET status = ?, sent_at = COALESCE(?, sent_at)
+                WHERE dedupe_key = ?
+                """,
+                (status, sent_at, dedupe_key),
+            )
+
+    def get_approval_notification(self, dedupe_key: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM approval_notifications WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+        return self._row_to_dict(row)
+
     def mark_prompt_marker(
         self,
         *,
@@ -1597,3 +1719,12 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _seconds_between(earlier: str | None, later: str | None) -> float:
+    if not earlier or not later:
+        return float("inf")
+    try:
+        return abs((_parse_datetime(later) - _parse_datetime(earlier)).total_seconds())
+    except (TypeError, ValueError):
+        return float("inf")

@@ -89,6 +89,13 @@ def assert_away_card_v2(card):
     assert "interactive_container" not in card_tags(card)
 
 
+def assert_completion_card_v2(card):
+    assert card["schema"] == "2.0"
+    assert "elements" not in card
+    assert isinstance(card["body"]["elements"], list)
+    assert "interactive_container" not in card_tags(card)
+
+
 def assert_quoted_away_footer(card, *, deadline="18:30", cwd="/workspace/project"):
     footer = body_markdown_contents(card)[-1]
     assert footer.splitlines() == [
@@ -110,37 +117,33 @@ def test_completion_card_title_includes_project_and_compact_footer(monkeypatch):
         footer_cwd="/workspace/project",
         footer_mode_text=cards.notification_mode_footer_text("all"),
         now=datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(
+            project_name="Skill-Create",
+            thread_title="建立 Skill-Create 基线",
+        ),
     )
 
     text = flatten_text(card)
-    notes = note_texts(card)
-    assert card["header"]["title"]["content"] == "完成通知 - Demo"
+    markdowns = body_markdown_contents(card)
+    assert_completion_card_v2(card)
+    assert card["header"]["title"]["content"] == "建立 Skill-Create 基线 / Skill-Create"
+    assert card["header"]["subtitle"]["content"] == "Codex完成通知：本轮任务已结束"
+    assert header_tag_texts(card) == ["完成通知"]
     assert card["header"]["template"] == "blue"
+    assert card["header"]["text_tag_list"][0]["color"] == "blue"
     assert "**工作目录**" not in text
-    assert "工作目录：/workspace/project" in text
-    assert "/workspace/project" in text
-    assert "发送时间：18:00" in text
-    assert "2026-" not in "\n".join(notes)
-    assert "UTC" not in "\n".join(notes)
-    assert notes == [
-        "\n".join(
-            [
-                "发送时间：18:00",
-                "工作目录：/workspace/project",
-                "当前通知模式：每轮完成后都会通知",
-                "通知模式修改方式：告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」",
-            ]
-        )
-    ]
-    footer_lines = notes[0].splitlines()
+    assert "/workspace/project" not in text
+    assert "工作目录：" not in text
+    assert "**完成**\n- 已完成 Task 4" in markdowns
+    assert "**验证**\n- pytest passed" in markdowns
+    footer_lines = markdowns[-1].splitlines()
     assert footer_lines == [
-        "发送时间：18:00",
-        "工作目录：/workspace/project",
-        "当前通知模式：每轮完成后都会通知",
-        "通知模式修改方式：告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」",
+        "> **时间**：18:00 ｜ **目录**：Skill-Create ｜ **通知模式**：每轮完成后通知",
+        "> 如需修改通知模式，请告诉Codex `暂停飞书通知 2 小时`",
     ]
     assert all(line.strip() for line in footer_lines)
-    assert "\n\n" not in notes[0]
+    assert "2026-" not in markdowns[-1]
+    assert "UTC" not in markdowns[-1]
     assert "codex-away-mode notify" not in text
     assert "config.toml" not in text
 
@@ -151,20 +154,74 @@ def test_fallback_completion_card_uses_cwd_project_title_and_footer_cwd(monkeypa
         reason="summary missing",
         cwd="/workspace/immichSlides-app",
         now=datetime(2026, 6, 18, 10, 1, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(
+            project_name="immichSlides-app",
+            thread_title="判断工程状态并梳理优先事项",
+        ),
     )
 
     text = flatten_text(card)
-    assert card["header"]["title"]["content"] == "Codex 回合已停止 - immichSlides-app（无摘要）"
-    assert card["header"]["template"] == "blue"
+    markdowns = body_markdown_contents(card)
+    assert_completion_card_v2(card)
+    assert card["header"]["title"]["content"] == "判断工程状态并梳理优先事项 / immichSlides-app"
+    assert card["header"]["subtitle"]["content"] == "Codex完成通知：本轮任务已停止但缺少摘要"
+    assert header_tag_texts(card) == ["无摘要"]
+    assert card["header"]["template"] == "wathet"
+    assert card["header"]["text_tag_list"][0]["color"] == "wathet"
     assert "无摘要" in text
-    assert "summary missing" in text
+    assert "summary missing" not in text
+    assert "**发生了什么**" in text
+    assert "- Codex 这一轮已经停止。" in text
+    assert "- 但 agent 没有写可用的完成摘要，所以无法生成正常完成通知。" in text
+    assert "**你需要知道**" in text
+    assert "- 这不一定代表任务失败，只代表这条通知缺少摘要。" in text
+    assert "**下一步**" in text
+    assert "- 需要继续：回到 Codex 直接追问或重新发起任务。" in text
+    assert "- 不需要处理：可以忽略这条兜底通知。" in text
     assert "**工作目录**" not in text
-    assert "工作目录：/workspace/immichSlides-app" in text
-    assert "发送时间：18:01" in text
-    assert "UTC" not in "\n".join(note_texts(card))
-    assert "忘了写摘要" in text
+    assert "/workspace/immichSlides-app" not in text
+    assert markdowns[-1].splitlines() == [
+        "> **时间**：18:01 ｜ **目录**：immichSlides-app ｜ **通知模式**：每轮完成后通知",
+        "> 如需修改通知模式，请告诉Codex `暂停飞书通知 2 小时`",
+    ]
+    assert "UTC" not in markdowns[-1]
+    assert "忘了写摘要" not in text
     assert "告诉Codex" in text
     assert "codex-away-mode notify" not in text
+
+
+def test_permission_request_card_is_a_desktop_approval_reminder(monkeypatch):
+    set_local_timezone(monkeypatch, "Asia/Shanghai")
+
+    card = cards.permission_request_card(
+        project="Skill-Create",
+        cwd="/Users/hutong/Codex项目/Skill-Create",
+        tool_name="Bash",
+        description="删除工作区外的临时文件",
+        command="rm /workspace-outside/codex-desktop-permission-target.txt",
+        now=datetime(2026, 6, 24, 8, 30, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(
+            project_name="Skill-Create",
+            thread_title="建立 Skill-Create 基线",
+        ),
+    )
+
+    text = flatten_text(card)
+    markdowns = body_markdown_contents(card)
+    assert_away_card_v2(card)
+    assert card["header"]["title"]["content"] == "建立 Skill-Create 基线 / Skill-Create"
+    assert card["header"]["subtitle"]["content"] == "Codex审批提醒：有一项操作正在等待你确认"
+    assert header_tag_texts(card) == ["需要审批"]
+    assert card["header"]["template"] == "orange"
+    assert "Bash" in text
+    assert "删除工作区外的临时文件" in text
+    assert "rm /workspace-outside/codex-desktop-permission-target.txt" in text
+    assert "请回到 Codex Desktop 处理审批" in text
+    assert "飞书不能直接完成审批" in text
+    assert markdowns[-1].splitlines() == [
+        "> **时间**：16:30 ｜ **目录**：Skill-Create",
+        "> 如果这不是你预期的操作，请在 Codex Desktop 中拒绝。",
+    ]
 
 
 def test_summary_sections_support_completion_card_without_body_workdir(monkeypatch):
@@ -176,27 +233,32 @@ def test_summary_sections_support_completion_card_without_body_workdir(monkeypat
     card = completion_card(
         title="Codex 完成通知",
         project=sections["项目"],
-        fields={key: value for key, value in sections.items() if key not in {"项目", "工作目录"}},
+        fields={
+            "完成": "Done\\n\\nMore",
+            **{key: value for key, value in sections.items() if key not in {"项目", "工作目录", "完成"}},
+        },
         footer_cwd=sections["工作目录"],
         footer_mode_text=cards.notification_mode_footer_text("all"),
         now=datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc),
+        title_context=cards.CardTitleContext(project_name="demo"),
     )
 
     text = flatten_text(card)
-    assert card["header"]["title"]["content"] == "Codex 完成通知 - Demo"
+    assert_completion_card_v2(card)
+    assert card["header"]["title"]["content"] == "demo"
+    assert card["header"]["subtitle"]["content"] == "Codex完成通知：本轮任务已结束"
     assert "**工作目录**" not in text
-    assert "工作目录：/workspace/demo" in text
-    assert "Done" in text
+    assert "/workspace/demo" not in text
+    assert "\\n" not in text
+    assert "- Done" in text
+    assert "- More" in text
     assert "pytest" in text
 
 
 def test_notification_mode_footer_text_uses_natural_language_not_cli():
     text = cards.notification_mode_footer_text("all")
 
-    assert text.splitlines() == [
-        "当前通知模式：每轮完成后都会通知",
-        "通知模式修改方式：告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」",
-    ]
+    assert text == "每轮完成后通知"
     assert "codex-away-mode" not in text
 
 

@@ -2,7 +2,7 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
-from codex_away_mode import doctor, install, notify, uninstall
+from codex_away_mode import doctor, hook_trust, install, notify, uninstall
 from codex_away_mode.config import AppConfig, load_config, save_config
 from codex_away_mode.lark import LarkMessage, SendResult
 from codex_away_mode.state import StateStore
@@ -50,6 +50,43 @@ class FakeLark:
         return SimpleNamespace(chat_id=self.test_chat_id)
 
 
+def managed_hooks_payload():
+    return {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "statusMessage": "Codex Away Mode managed hook",
+                            "command": "codex-away-mode notify stop --json",
+                        }
+                    ]
+                }
+            ],
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "statusMessage": "Codex Away Mode managed hook",
+                            "command": "codex-away-mode notify mark-prompt --json",
+                        }
+                    ]
+                }
+            ],
+            "PermissionRequest": [
+                {
+                    "hooks": [
+                        {
+                            "statusMessage": "Codex Away Mode managed hook",
+                            "command": "codex-away-mode notify permission-request --hook-json",
+                        }
+                    ]
+                }
+            ],
+        }
+    }
+
+
 def user_message(message_id, reply_to):
     return LarkMessage(
         message_id=message_id,
@@ -95,7 +132,26 @@ def record_stop_hook_invocation(paths):
     )
 
 
-def write_codex_hook_state(paths, *, stop_enabled=True, prompt_enabled=True):
+def record_permission_request_hook_invocation(paths):
+    StateStore(paths.runtime_state_path).record_diagnostic_event(
+        event_kind="codex_hook_invocation",
+        severity="info",
+        message="PermissionRequest hook executed.",
+        detail={
+            "hook_event_name": "PermissionRequest",
+            "hooks_fingerprint": doctor.hooks_fingerprint(paths),
+        },
+        created_at="2026-06-18T10:01:00Z",
+    )
+
+
+def write_codex_hook_state(
+    paths,
+    *,
+    stop_enabled=True,
+    prompt_enabled=True,
+    permission_enabled=True,
+):
     path = paths.codex_config_path
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -113,6 +169,8 @@ def write_codex_hook_state(paths, *, stop_enabled=True, prompt_enabled=True):
         block("user_prompt_submit", prompt_enabled)
         + "\n\n"
         + block("stop", stop_enabled)
+        + "\n\n"
+        + block("permission_request", permission_enabled)
         + "\n",
         encoding="utf-8",
     )
@@ -149,32 +207,7 @@ def test_doctor_reports_sqlite_failure_when_install_store_unavailable(tmp_path, 
     paths = FakePaths(tmp_path)
     save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
     paths.hooks_json.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "hooks": [
-                                {
-                                    "statusMessage": "Codex Away Mode managed hook",
-                                    "command": "codex-away-mode notify stop --json",
-                                }
-                            ]
-                        }
-                    ],
-                    "UserPromptSubmit": [
-                        {
-                            "hooks": [
-                                {
-                                    "statusMessage": "Codex Away Mode managed hook",
-                                    "command": "codex-away-mode notify mark-prompt --json",
-                                }
-                            ]
-                        }
-                    ],
-                }
-            }
-        ),
+        json.dumps(managed_hooks_payload()),
         encoding="utf-8",
     )
 
@@ -270,6 +303,67 @@ def test_doctor_passes_after_notify_delivery_and_current_hook_trust(tmp_path):
     assert "hook_trust_verified" in report["passed_codes"]
     assert "hook_execution_verified" not in report["passed_codes"]
     assert StateStore(paths.install_state_path).install_status()["status"] == "installed"
+
+
+def test_doctor_accepts_permission_request_trust_hash_without_enabled_before_first_run(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    mark_notify_delivery_verified(paths)
+    write_codex_hook_state(paths, permission_enabled=None)
+
+    report = doctor.run_doctor(paths)
+
+    assert report["ok"] is True
+    assert "notify_delivery_verified" in report["passed_codes"]
+    assert "hook_trust_verified" in report["passed_codes"]
+    assert "hook_trust_missing" not in report["failed_codes"]
+    assert report["hook_trust"]["permission_request"]["status"] == "trust_record_present"
+    assert StateStore(paths.install_state_path).install_status()["status"] == "installed"
+
+
+def test_doctor_accepts_permission_request_missing_enabled_after_runtime_invocation(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    mark_notify_delivery_verified(paths)
+    write_codex_hook_state(paths, permission_enabled=None)
+    record_permission_request_hook_invocation(paths)
+
+    report = doctor.run_doctor(paths)
+
+    assert report["ok"] is True
+    assert "notify_delivery_verified" in report["passed_codes"]
+    assert "hook_trust_verified" in report["passed_codes"]
+    assert report["hook_trust"]["permission_request"]["status"] == "observed"
+    assert "hook_trust_missing" not in report["failed_codes"]
+    assert StateStore(paths.install_state_path).install_status()["status"] == "installed"
+
+
+def test_doctor_finds_recent_permission_request_invocation_after_many_old_events(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    mark_notify_delivery_verified(paths)
+    write_codex_hook_state(paths, permission_enabled=None)
+    store = StateStore(paths.runtime_state_path)
+    for index in range(60):
+        store.record_diagnostic_event(
+            event_kind="codex_hook_invocation",
+            severity="info",
+            message="Stop hook executed.",
+            detail={
+                "hook_event_name": "Stop",
+                "hooks_fingerprint": doctor.hooks_fingerprint(paths),
+            },
+            created_at=f"2026-06-18T09:{index:02d}:00Z",
+        )
+    record_permission_request_hook_invocation(paths)
+
+    report = doctor.run_doctor(paths)
+
+    assert report["ok"] is True
+    assert report["hook_trust"]["permission_request"]["status"] == "observed"
 
 
 def test_doctor_warns_about_stale_runtime_without_cleanup(tmp_path):
@@ -452,32 +546,7 @@ def test_legacy_global_state_migration_reads_legacy_database_without_initializin
     paths = FakePaths(tmp_path)
     save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
     paths.hooks_json.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "hooks": [
-                                {
-                                    "statusMessage": "Codex Away Mode managed hook",
-                                    "command": "codex-away-mode notify stop --json",
-                                }
-                            ]
-                        }
-                    ],
-                    "UserPromptSubmit": [
-                        {
-                            "hooks": [
-                                {
-                                    "statusMessage": "Codex Away Mode managed hook",
-                                    "command": "codex-away-mode notify mark-prompt --json",
-                                }
-                            ]
-                        }
-                    ],
-                }
-            }
-        ),
+        json.dumps(managed_hooks_payload()),
         encoding="utf-8",
     )
     fingerprint = doctor.hooks_fingerprint(paths)
@@ -890,11 +959,30 @@ def test_install_yes_writes_guidance_hooks_and_requires_hook_trust_verification(
     assert paths.hooks_json.exists()
     hooks_json = paths.hooks_json.read_text(encoding="utf-8")
     assert str(paths.wrapper_path) in hooks_json
+    payload = json.loads(hooks_json)
+    permission_hooks = payload["hooks"].get("PermissionRequest", [])
+    assert permission_hooks
+    assert (
+        permission_hooks[0]["hooks"][0]["command"]
+        == f"{paths.wrapper_path} notify permission-request --hook-json"
+    )
     assert '"command": "/bin/codex-away-mode' not in hooks_json
     assert result["status"] == "hook_trust_pending"
     assert "doctor --e2e-notify" in result["next_step"]
     assert "trust" in result["next_step"].lower()
     assert load_config(paths.config_path).feishu_chat_id == "oc_test_from_notification"
+
+
+def test_hook_trust_requires_permission_request_hook_after_install(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+
+    result = hook_trust.inspect_managed_hooks(paths)
+
+    assert result["ok"] is True
+    assert "permission_request" in result["hooks"]
+    assert "notify permission-request --hook-json" in result["hooks"]["permission_request"]["command"]
 
 
 def test_install_yes_syncs_installable_skill_package(tmp_path):

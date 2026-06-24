@@ -31,6 +31,7 @@ CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
 "$CODEX_AWAY_CLI" notify mark-prompt --json
 "$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --json
 "$CODEX_AWAY_CLI" notify stop --json
+"$CODEX_AWAY_CLI" notify permission-request --hook-json
 ```
 
 Notification mode:
@@ -43,6 +44,17 @@ CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
 ```
 
 Default mode is `all`. Completion card titles should include the project name when available. Footer text should keep operational metadata out of the body in one compact note with no blank lines. Show time as local `HH:MM` only. Include the workspace cwd when useful. User-facing cards should say that the user can tell Codex in natural language, using wording like `告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」`; do not show `config.toml`, `CODEX_HOME`, UTC offsets, dates, or raw CLI commands in routine notification cards. The CLI commands above are for Codex/installer execution, not the main user instruction text.
+
+## Approval Reminders
+
+The managed `PermissionRequest` hook calls:
+
+```bash
+CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
+"$CODEX_AWAY_CLI" notify permission-request --hook-json
+```
+
+This command reads the hook payload from stdin and sends a Feishu reminder card when Codex is waiting for user approval. In hook mode it prints `{}` and exits 0 so the notification path cannot approve, deny, or block the original Codex approval flow. Feishu replies to this card are not prompts and do not approve the operation. Tell the user to return to Codex Desktop to approve or reject.
 
 ## Away Mode
 

@@ -27,6 +27,7 @@ Read the Skill first:
 ## What It Does
 
 - Sends completion cards from summaries staged through `codex-away-mode notify stage-summary`.
+- Sends approval reminder cards when Codex raises a `PermissionRequest`; the user still approves or rejects in Codex Desktop.
 - Protects against cross-project notifications by storing staged summaries in the central runtime store keyed by cwd hash.
 - Keeps Codex Away Mode runtime files out of project workspaces.
 - Sends a no-summary fallback only for fresh user turns whose transcript does not show an active goal.
@@ -48,4 +49,4 @@ tests/                              Local automated tests.
 
 This repository is the development workspace. Future open-source publishing should export only public files such as `README.md`, `codex-away-mode/`, tests, and runtime code. Private planning notes, local evidence, personal configuration, and sensitive identifiers must stay out of Git history.
 
-Live Feishu authorization, Codex Hook trust, and route probes can require user confirmation. Automated tests use fake transports and must not be treated as proof of live Feishu delivery. `doctor --e2e-notify` is a CLI delivery probe; current Hook trust is reported by `doctor --json` from Codex Desktop's Hook state. Historical Stop hook invocation records are diagnostic only.
+Live Feishu authorization, Codex Hook trust, and route probes can require user confirmation. Automated tests use fake transports and must not be treated as proof of live Feishu delivery. `doctor --e2e-notify` is a CLI delivery probe; current Hook trust is reported by `doctor --json` from Codex Desktop's Hook state. Historical Stop hook invocation records are diagnostic only. PermissionRequest notifications are reminders only; this project does not approve or reject Codex operations from Feishu.

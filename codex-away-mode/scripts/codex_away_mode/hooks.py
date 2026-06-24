@@ -20,6 +20,10 @@ def managed_user_prompt_command(cli_command: str) -> str:
     return f"{cli_command} notify mark-prompt --json"
 
 
+def managed_permission_request_command(cli_command: str) -> str:
+    return f"{cli_command} notify permission-request --hook-json"
+
+
 def install_guidance_block(content: str, *, cli_command: str = "codex-away-mode") -> str:
     block = (
         f"{GUIDANCE_START}\n"
@@ -37,6 +41,7 @@ def install_guidance_block(content: str, *, cli_command: str = "codex-away-mode"
         "If the user asks in natural language to extend the current Away Mode wait, convert the duration to minutes and pass `--extend-minutes <minutes>` on the next `away resume` call; do not read or write Away Mode SQLite/StateStore directly.\n"
         "Never call `away wait --resume <away_session_id>` or `away resume <away_session_id>` without a resume token. Never resume a session discovered from `away status`.\n"
         "Do not claim the turn is complete while an Away Session is still active.\n"
+        "If Codex asks for approval while you are away, the PermissionRequest hook may send a Feishu reminder; the user must still approve or reject in Codex Desktop.\n"
         f"{GUIDANCE_END}"
     )
     stripped = _remove_guidance_block(content).rstrip()
@@ -66,6 +71,13 @@ def install_hooks(*, hooks_path, backup_dir, cli_command: str) -> dict[str, Any]
         managed_user_prompt_command(cli_command),
         timeout=10,
     )
+    _remove_managed_entries(hooks_root, "PermissionRequest")
+    _ensure_managed_entry(
+        hooks_root,
+        "PermissionRequest",
+        managed_permission_request_command(cli_command),
+        timeout=10,
+    )
     _write_hooks(hooks_path, data)
     return data
 
@@ -77,7 +89,7 @@ def uninstall_hooks(*, hooks_path, backup_dir) -> dict[str, Any]:
         _backup(hooks_path, backup_dir)
 
     hooks_root = data.setdefault("hooks", {})
-    for event in ("Stop", "UserPromptSubmit"):
+    for event in ("Stop", "UserPromptSubmit", "PermissionRequest"):
         _remove_managed_entries(hooks_root, event)
     _write_hooks(hooks_path, data)
     return data
@@ -117,6 +129,7 @@ def _is_managed_hook(hook: dict[str, Any]) -> bool:
         hook.get("statusMessage") == MANAGED_STATUS_MESSAGE
         or command.endswith(" notify stop --json")
         or command.endswith(" notify mark-prompt --json")
+        or command.endswith(" notify permission-request --hook-json")
     )
 
 

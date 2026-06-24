@@ -10,6 +10,7 @@ MANAGED_STATUS_MESSAGE = "Codex Away Mode managed hook"
 REQUIRED_EVENTS = {
     "UserPromptSubmit": "user_prompt_submit",
     "Stop": "stop",
+    "PermissionRequest": "permission_request",
 }
 
 
@@ -46,6 +47,13 @@ def evaluate_hook_trust(paths) -> dict[str, Any]:
             disabled.append(event_key)
             trusted[event_key] = {"status": "disabled", "trust_key": trust_key}
             continue
+        if event_key == "permission_request" and entry.get("trusted_hash"):
+            trusted[event_key] = {"status": "trust_record_present", "trust_key": trust_key}
+            continue
+        if entry.get("enabled") is not True:
+            missing.append(event_key)
+            trusted[event_key] = {"status": "missing_enabled", "trust_key": trust_key}
+            continue
         trusted[event_key] = {"status": "trusted", "trust_key": trust_key}
 
     if disabled:
@@ -56,8 +64,8 @@ def evaluate_hook_trust(paths) -> dict[str, Any]:
             "hooks": trusted,
             "next_step": (
                 "Codex Away Mode 的 Hook 当前在 Codex Desktop 里被关闭。请打开 "
-                "Codex Desktop Settings -> Hooks，重新信任 Codex Away Mode 的 Stop "
-                "和 UserPromptSubmit Hook，然后重新运行 codex-away-mode doctor --json。"
+                "Codex Desktop Settings -> Hooks，重新信任 Codex Away Mode 的 Stop、"
+                "UserPromptSubmit 和 PermissionRequest Hook，然后重新运行 codex-away-mode doctor --json。"
             ),
         }
     if missing:
@@ -193,6 +201,8 @@ def _is_managed_hook(event: str, hook: dict[str, Any]) -> bool:
     if event == "Stop" and "notify stop --json" not in command:
         return False
     if event == "UserPromptSubmit" and "notify mark-prompt --json" not in command:
+        return False
+    if event == "PermissionRequest" and "notify permission-request --hook-json" not in command:
         return False
     return "codex-away-mode" in command or hook.get("statusMessage") == MANAGED_STATUS_MESSAGE
 

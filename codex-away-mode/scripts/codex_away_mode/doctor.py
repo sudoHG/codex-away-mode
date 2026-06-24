@@ -127,6 +127,16 @@ def run_doctor(
             trust_result = hook_trust.evaluate_hook_trust(paths)
             report["hook_trust"] = trust_result.get("hooks", {})
             if trust_result["ok"]:
+                runtime_trust = _runtime_hook_trust_observation(
+                    paths,
+                    hooks=report["hook_trust"],
+                    hooks_fingerprint=fingerprint,
+                )
+                if runtime_trust is not None:
+                    report["hook_trust"] = runtime_trust["hooks"]
+                    report.setdefault("diagnostics", {})["last_hook_execution_observed"] = runtime_trust[
+                        "observed"
+                    ]
                 report["passed_codes"].append(trust_result["passed_code"])
                 store.update_install_status(
                     status="installed",
@@ -136,6 +146,24 @@ def run_doctor(
                     report["next_step"] = "No immediate action required."
                 return _finalize(report)
             if trust_result.get("failed_code"):
+                runtime_trust = _runtime_hook_trust_override(
+                    paths,
+                    trust_result=trust_result,
+                    hooks_fingerprint=fingerprint,
+                )
+                if runtime_trust is not None:
+                    report["hook_trust"] = runtime_trust["hooks"]
+                    report.setdefault("diagnostics", {})["last_hook_execution_observed"] = runtime_trust[
+                        "observed"
+                    ]
+                    report["passed_codes"].append("hook_trust_verified")
+                    store.update_install_status(
+                        status="installed",
+                        next_step="Installation is verified.",
+                    )
+                    if not report["next_step"]:
+                        report["next_step"] = "No immediate action required."
+                    return _finalize(report)
                 _fail(report, trust_result["failed_code"], trust_result["next_step"])
                 return _finalize(report)
             warning_code = trust_result.get("warning_code")
@@ -395,11 +423,16 @@ def _finalize(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
-def _last_stop_hook_invocation(paths, *, hooks_fingerprint: str) -> dict[str, Any] | None:
+def _last_hook_invocation(
+    paths,
+    *,
+    hook_event_name: str,
+    hooks_fingerprint: str,
+) -> dict[str, Any] | None:
     try:
         events = StateStore(Path(paths.runtime_state_path)).list_diagnostic_events(
             "codex_hook_invocation",
-            limit=50,
+            limit=200,
         )
     except Exception:
         return False
@@ -408,7 +441,7 @@ def _last_stop_hook_invocation(paths, *, hooks_fingerprint: str) -> dict[str, An
             detail = json.loads(event.get("detail_json") or "{}")
         except json.JSONDecodeError:
             continue
-        if detail.get("hook_event_name") != "Stop":
+        if detail.get("hook_event_name") != hook_event_name:
             continue
         if detail.get("hooks_fingerprint") != hooks_fingerprint:
             continue
@@ -416,8 +449,71 @@ def _last_stop_hook_invocation(paths, *, hooks_fingerprint: str) -> dict[str, An
     return None
 
 
+def _last_stop_hook_invocation(paths, *, hooks_fingerprint: str) -> dict[str, Any] | None:
+    return _last_hook_invocation(
+        paths,
+        hook_event_name="Stop",
+        hooks_fingerprint=hooks_fingerprint,
+    )
+
+
 def _stop_hook_invocation_verified(paths, *, hooks_fingerprint: str) -> bool:
     return _last_stop_hook_invocation(paths, hooks_fingerprint=hooks_fingerprint) is not None
+
+
+def _runtime_hook_trust_override(
+    paths,
+    *,
+    trust_result: dict[str, Any],
+    hooks_fingerprint: str,
+) -> dict[str, Any] | None:
+    return _runtime_hook_trust_observation(
+        paths,
+        hooks=trust_result.get("hooks") or {},
+        hooks_fingerprint=hooks_fingerprint,
+        require_other_hooks_trusted=True,
+    )
+
+
+def _runtime_hook_trust_observation(
+    paths,
+    *,
+    hooks: dict[str, Any],
+    hooks_fingerprint: str,
+    require_other_hooks_trusted: bool = False,
+) -> dict[str, Any] | None:
+    hooks = dict(hooks)
+    permission = hooks.get("permission_request")
+    if not permission or permission.get("status") not in {
+        "missing_enabled",
+        "trust_record_present",
+    }:
+        return None
+    if require_other_hooks_trusted:
+        other_untrusted = [
+            event_key
+            for event_key, state in hooks.items()
+            if event_key != "permission_request" and state.get("status") != "trusted"
+        ]
+        if other_untrusted:
+            return None
+    event = _last_hook_invocation(
+        paths,
+        hook_event_name="PermissionRequest",
+        hooks_fingerprint=hooks_fingerprint,
+    )
+    if event is None:
+        return None
+    hooks["permission_request"] = {
+        **permission,
+        "status": "observed",
+    }
+    return {
+        "hooks": hooks,
+        "observed": {
+            "permission_request": event.get("created_at"),
+        },
+    }
 
 
 def _hooks_installed(paths) -> bool:
@@ -443,7 +539,7 @@ def hooks_fingerprint(paths) -> str:
     managed: dict[str, list[dict[str, Any]]] = {}
     hooks_root = payload.get("hooks", {}) if isinstance(payload, dict) else {}
     if isinstance(hooks_root, dict):
-        for event in ("UserPromptSubmit", "Stop"):
+        for event in ("UserPromptSubmit", "Stop", "PermissionRequest"):
             entries: list[dict[str, Any]] = []
             for group in hooks_root.get(event, []):
                 if not isinstance(group, dict):
@@ -457,6 +553,7 @@ def hooks_fingerprint(paths) -> str:
                         "codex-away-mode" not in command
                         and "notify stop --json" not in command
                         and "notify mark-prompt --json" not in command
+                        and "notify permission-request --hook-json" not in command
                         and status_message != "Codex Away Mode managed hook"
                     ):
                         continue

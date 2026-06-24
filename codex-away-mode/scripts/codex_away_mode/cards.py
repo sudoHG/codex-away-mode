@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,14 +21,23 @@ def completion_card(
 ) -> dict[str, Any]:
     fields = dict(fields)
     footer_cwd = footer_cwd or _pop_workdir(fields)
-    body = [_markdown(f"**{key}**\n{value}") for key, value in fields.items()]
-    footer_parts = []
-    if now:
-        footer_parts.append(f"发送时间：{_display_time(now)}")
-    if footer_cwd:
-        footer_parts.append(f"工作目录：{footer_cwd}")
-    footer_parts.append(footer_mode_text)
-    return _card(_card_title(title, project, title_suffix, title_context), [*body, _footer_note(footer_parts)])
+    body = [_markdown(_completion_section(key, value)) for key, value in fields.items()]
+    body.append(
+        _completion_footer(
+            now=now,
+            footer_cwd=footer_cwd,
+            footer_mode_text=footer_mode_text,
+            title_context=title_context,
+        )
+    )
+    return _away_card(
+        title=_completion_identity_title(title, project, title_suffix, title_context),
+        subtitle="Codex完成通知：本轮任务已结束",
+        status_label="完成通知",
+        status_color="blue",
+        template="blue",
+        elements=body,
+    )
 
 
 def fallback_completion_card(
@@ -38,44 +48,87 @@ def fallback_completion_card(
     title_context: CardTitleContext | None = None,
 ) -> dict[str, Any]:
     project = _project_from_cwd(cwd)
-    return completion_card(
-        title="Codex 回合已停止",
-        project=project,
-        fields={
-            "说明": f"摘要不可用：{reason}",
-            "完成": "本轮 Codex 回合已经停止，但 agent 没有写可用完成摘要。",
-            "需要你看": "这通常表示 agent 忘了写摘要；如果这不是你预期的结束点，请回到 Codex 查看会话。",
-        },
-        footer_cwd=cwd,
-        footer_mode_text=notification_mode_footer_text("all"),
-        now=now,
-        title_suffix="（无摘要）",
+    elements = [
+        _markdown(
+            "**发生了什么**\n"
+            "- Codex 这一轮已经停止。\n"
+            "- 但 agent 没有写可用的完成摘要，所以无法生成正常完成通知。"
+        ),
+        _markdown(
+            "**你需要知道**\n"
+            "- 这不一定代表任务失败，只代表这条通知缺少摘要。\n"
+            "- 如果这不是你预期的结束点，请回到 Codex 查看会话。"
+        ),
+        _markdown(
+            "**下一步**\n"
+            "- 需要继续：回到 Codex 直接追问或重新发起任务。\n"
+            "- 不需要处理：可以忽略这条兜底通知。"
+        ),
+        _completion_footer(
+            now=now,
+            footer_cwd=cwd,
+            footer_mode_text=notification_mode_footer_text("all"),
+            title_context=title_context,
+        ),
+    ]
+    return _away_card(
+        title=_completion_identity_title("Codex 完成通知", project, "", title_context),
+        subtitle="Codex完成通知：本轮任务已停止但缺少摘要",
+        status_label="无摘要",
+        status_color="wathet",
+        template="wathet",
+        elements=elements,
+    )
+
+
+def permission_request_card(
+    *,
+    project: str | None,
+    cwd: str | None,
+    tool_name: str,
+    description: str | None,
+    command: str | None,
+    now: datetime | str | None,
+    title_context: CardTitleContext | None = None,
+) -> dict[str, Any]:
+    identity = _away_identity_title(
         title_context=title_context,
+        fallback_project=project or project_from_cwd(cwd),
+    )
+    detail_lines = [
+        "**请回到 Codex Desktop 处理审批**",
+        "飞书不能直接完成审批；请在 Codex Desktop 中确认或拒绝这项操作。",
+    ]
+    request_lines = [
+        "**审批说明**",
+        str(description or "Codex 请求执行一项需要审批的操作。").strip(),
+        "",
+        "**请求操作**",
+        f"{str(tool_name or '未知工具').strip()}：{str(command or '未提供可展示的操作内容').strip()}",
+    ]
+    return _away_card(
+        title=identity,
+        subtitle="Codex审批提醒：有一项操作正在等待你确认",
+        status_label="需要审批",
+        status_color="orange",
+        template="orange",
+        elements=[
+            _markdown("\n".join(detail_lines)),
+            _static_box("\n".join(request_lines)),
+            _approval_footer(now=now, cwd=cwd, title_context=title_context),
+        ],
     )
 
 
 def notification_mode_footer_text(mode: str) -> str:
     normalized = mode or "all"
     if normalized == "all":
-        return "\n".join(
-            [
-                "当前通知模式：每轮完成后都会通知",
-                "通知模式修改方式：告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」",
-            ]
-        )
+        return "每轮完成后通知"
     elif normalized == "off":
-        return "\n".join(
-            [
-                "当前通知模式：不会发送完成通知",
-                "通知模式修改方式：告诉Codex「打开飞书完成通知」",
-            ]
-        )
-    return "\n".join(
-        [
-            f"当前通知模式：{normalized}",
-            "通知模式修改方式：告诉Codex你想怎么调整飞书通知",
-        ]
-    )
+        return "不会发送完成通知"
+    if normalized == "snooze":
+        return "暂停中"
+    return str(normalized)
 
 
 def summary_sections(markdown: str) -> dict[str, str]:
@@ -145,6 +198,21 @@ def _highlight_box(detail: str) -> dict[str, Any]:
     }
 
 
+def _static_box(content: str) -> dict[str, Any]:
+    return {
+        "tag": "column_set",
+        "background_style": "grey",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [_markdown(content)],
+            }
+        ],
+    }
+
+
 def _away_footer(*, deadline: datetime | str, cwd: str) -> dict[str, Any]:
     lines = [
         f"**回复窗口将于 {_display_time(deadline)} 关闭，请在此之前回复**",
@@ -152,6 +220,25 @@ def _away_footer(*, deadline: datetime | str, cwd: str) -> dict[str, Any]:
         f"工作目录：{cwd}",
     ]
     return _markdown("\n".join(f"> {line}" for line in lines))
+
+
+def _approval_footer(
+    *,
+    now: datetime | str | None,
+    cwd: str | None,
+    title_context: CardTitleContext | None,
+) -> dict[str, Any]:
+    first_line_parts: list[str] = []
+    if now:
+        first_line_parts.append(f"**时间**：{_display_time(now)}")
+    directory = _completion_directory_label(cwd, title_context)
+    if directory:
+        first_line_parts.append(f"**目录**：{directory}")
+    lines = []
+    if first_line_parts:
+        lines.append("> " + " ｜ ".join(first_line_parts))
+    lines.append("> 如果这不是你预期的操作，请在 Codex Desktop 中拒绝。")
+    return _markdown("\n".join(lines))
 
 
 def _away_card(
@@ -199,6 +286,89 @@ def _away_identity_title(
     if project:
         return project
     return "Codex Away Mode"
+
+
+def _completion_identity_title(
+    title: str,
+    project: str | None,
+    title_suffix: str,
+    title_context: CardTitleContext | None,
+) -> str:
+    identity = _away_identity_title(title_context=title_context, fallback_project=project)
+    compact_title = _compact_title_part(title)
+    generic_titles = {"完成通知", "Codex 完成通知", "Codex完成通知"}
+    if identity != "Codex Away Mode":
+        if compact_title and compact_title not in generic_titles:
+            return f"{compact_title} - {identity}{title_suffix}"
+        return f"{identity}{title_suffix}"
+    if compact_title:
+        return f"{compact_title}{title_suffix}"
+    return f"Codex 完成通知{title_suffix}"
+
+
+def _completion_section(key: str, value: Any) -> str:
+    return f"**{key}**\n{_as_markdown_list(value)}"
+
+
+def _as_markdown_list(value: Any) -> str:
+    normalized = _normalize_summary_text(value)
+    if not normalized:
+        return "- 未提供"
+    lines = [line.rstrip() for line in normalized.splitlines()]
+    non_empty = [line.strip() for line in lines if line.strip()]
+    if any(_is_markdown_list_item(line) for line in non_empty):
+        return "\n".join(lines).strip()
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+    if len(paragraphs) <= 1:
+        paragraphs = non_empty
+    return "\n".join(f"- {part}" for part in paragraphs if part)
+
+
+def _normalize_summary_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if "\\n" in text:
+        text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+    return text.strip()
+
+
+def _is_markdown_list_item(line: str) -> bool:
+    return bool(re.match(r"^\s*(?:[-*•]|\d+[.)])\s+", line))
+
+
+def _completion_footer(
+    *,
+    now: datetime | str | None,
+    footer_cwd: str | None,
+    footer_mode_text: str,
+    title_context: CardTitleContext | None,
+) -> dict[str, Any]:
+    first_line_parts: list[str] = []
+    if now:
+        first_line_parts.append(f"**时间**：{_display_time(now)}")
+    directory = _completion_directory_label(footer_cwd, title_context)
+    if directory:
+        first_line_parts.append(f"**目录**：{directory}")
+    mode = str(footer_mode_text or "").strip()
+    if mode:
+        first_line_parts.append(f"**通知模式**：{mode}")
+
+    lines = []
+    if first_line_parts:
+        lines.append("> " + " ｜ ".join(first_line_parts))
+    lines.append("> 如需修改通知模式，请告诉Codex `暂停飞书通知 2 小时`")
+    return _markdown("\n".join(lines))
+
+
+def _completion_directory_label(
+    footer_cwd: str | None,
+    title_context: CardTitleContext | None,
+) -> str | None:
+    project = _compact_title_part(title_context.project_name if title_context else None)
+    if project:
+        return project
+    if footer_cwd:
+        return _project_from_cwd(str(footer_cwd))
+    return None
 
 
 def _compact_title_part(value: str | None) -> str | None:

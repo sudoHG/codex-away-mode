@@ -100,6 +100,61 @@ def test_notify_stop_json_does_not_require_cwd(tmp_path, monkeypatch, capsys):
     assert payload["cwd"] == str(workspace)
 
 
+def test_notify_permission_request_hook_mode_sends_card_and_outputs_empty_decision(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    paths = RuntimePaths.from_environment()
+    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_chat"))
+    sent_payloads = []
+
+    class FakePermissionClient:
+        def __init__(self, _paths, *, hook_stdin=None, env=None):
+            self.hook_stdin = hook_stdin
+
+        def send_permission_request_card(self, payload):
+            sent_payloads.append(payload)
+            return SimpleNamespace(message_id="om_permission", chat_id="oc_chat")
+
+    monkeypatch.setattr(cli, "_NotificationClient", FakePermissionClient)
+    payload = {
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "Bash",
+        "cwd": "/workspace/Skill-Create",
+        "session_id": "session_test",
+        "turn_id": "turn_test",
+        "tool_input": {
+            "command": "rm /workspace-outside/codex-desktop-permission-target.txt",
+            "description": "需要删除一个外部测试文件。",
+        },
+    }
+
+    code = cli.main(
+        ["notify", "permission-request", "--hook-json"],
+        stdin=StringIO(json.dumps(payload)),
+    )
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert captured.out == "{}\n"
+    assert sent_payloads
+    sent = sent_payloads[0]
+    assert sent["tool_name"] == "Bash"
+    assert sent["cwd"] == "/workspace/Skill-Create"
+    assert sent["description"] == "需要删除一个外部测试文件。"
+    assert "codex-desktop-permission-target.txt" in sent["command"]
+    assert "rm /workspace-outside" not in captured.out
+    events = StateStore(paths.runtime_state_path).list_diagnostic_events(
+        "codex_hook_invocation"
+    )
+    assert events
+    detail = json.loads(events[-1]["detail_json"])
+    assert detail["hook_event_name"] == "PermissionRequest"
+    assert detail["hooks_fingerprint"]
+
+
 def test_notify_mode_updates_config_under_codex_home(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
 
@@ -144,14 +199,19 @@ def test_notification_client_summary_card_uses_project_title_footer_cwd_and_time
 
     card = client.lark.cards[0]
     text = flatten_text(card)
-    assert card["header"]["title"]["content"] == "Codex 完成通知 - Skill-Create / 建立 Skill-Create 基线"
+    assert card["schema"] == "2.0"
+    assert card["header"]["title"]["content"] == "建立 Skill-Create 基线 / Skill-Create"
+    assert card["header"]["subtitle"]["content"] == "Codex完成通知：本轮任务已结束"
+    assert card["header"]["text_tag_list"][0]["text"]["content"] == "完成通知"
     assert "飞书通知与 AwayMode" not in card["header"]["title"]["content"]
     assert "**工作目录**" not in text
-    assert "工作目录：/workspace/Skill-Create" in text
-    assert "发送时间：" in text
-    assert "发送时间：18:00" in text
+    assert "/workspace/Skill-Create" not in text
+    assert "- Done" in text
+    assert "**时间**：18:00" in text
+    assert "**目录**：Skill-Create" in text
+    assert "**通知模式**：每轮完成后通知" in text
     assert "告诉Codex" in text
-    assert "关掉飞书完成通知" in text
+    assert "暂停飞书通知 2 小时" in text
     assert "codex-away-mode notify" not in text
 
 
@@ -171,11 +231,15 @@ def test_notification_client_plain_summary_uses_cwd_fallback_project_footer_and_
 
     card = client.lark.cards[0]
     text = flatten_text(card)
-    assert card["header"]["title"]["content"] == "Codex 完成通知 - immichSlides-app"
+    assert card["schema"] == "2.0"
+    assert card["header"]["title"]["content"] == "immichSlides-app"
+    assert card["header"]["subtitle"]["content"] == "Codex完成通知：本轮任务已结束"
+    assert card["header"]["text_tag_list"][0]["text"]["content"] == "完成通知"
     assert "**完成**" in text
     assert "**摘要**" not in text
-    assert "工作目录：/workspace/immichSlides-app" in text
-    assert "发送时间：18:00" in text
+    assert "工作目录：/workspace/immichSlides-app" not in text
+    assert "**目录**：immichSlides-app" in text
+    assert "**时间**：18:00" in text
 
 
 def test_notify_snooze_sets_snooze_until(tmp_path, monkeypatch, capsys):

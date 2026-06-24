@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,20 @@ class NotifyResult:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class PermissionRequestContext:
+    hook_event_name: str
+    tool_name: str
+    session_id: str | None
+    turn_id: str | None
+    cwd: str | None
+    command: str | None
+    description: str | None
+    raw_tool_input: dict
+    command_hash: str
+    dedupe_key: str
+
+
 def _runtime_store(paths) -> StateStore:
     ensure_runtime_state_writable(paths)
     return StateStore(Path(paths.runtime_state_path))
@@ -72,6 +87,102 @@ def stage_summary(
         summary_markdown=summary_markdown,
         staged_at=_to_utc(now).isoformat(),
         expires_at=(_to_utc(now) + timedelta(seconds=max_age_seconds)).isoformat(),
+    )
+
+
+def send_permission_request(
+    paths,
+    lark,
+    *,
+    hook_stdin: str | bytes | None,
+    now: datetime,
+) -> NotifyResult:
+    config = load_config(Path(paths.config_path))
+    if not getattr(config, "approval_notifications_enabled", True):
+        return NotifyResult("skipped", "approval_notifications_disabled")
+
+    context = permission_request_context(hook_stdin)
+    if context is None:
+        return NotifyResult("skipped", "invalid_permission_request_payload")
+
+    store = _runtime_store(paths)
+    seen_at = _to_utc(now).isoformat()
+    reserved = store.reserve_approval_notification(
+        dedupe_key=context.dedupe_key,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        cwd=context.cwd,
+        tool_name=context.tool_name,
+        command_hash=context.command_hash,
+        seen_at=seen_at,
+        throttle_seconds=int(getattr(config, "approval_notifications_throttle_seconds", 300) or 300),
+    )
+    if reserved["status"] == "suppressed":
+        return NotifyResult("suppressed", context.dedupe_key)
+
+    try:
+        lark.send_permission_request_card(
+            {
+                "project": cards.project_from_cwd(context.cwd),
+                "cwd": context.cwd,
+                "tool_name": context.tool_name,
+                "description": context.description,
+                "command": context.command,
+                "now": now,
+                "session_id": context.session_id,
+                "turn_id": context.turn_id,
+            }
+        )
+    except Exception:
+        store.mark_approval_notification_result(
+            context.dedupe_key,
+            status="send_failed",
+        )
+        return NotifyResult("send_failed", context.dedupe_key)
+
+    store.mark_approval_notification_result(
+        context.dedupe_key,
+        status="sent",
+        sent_at=seen_at,
+    )
+    return NotifyResult("sent", context.dedupe_key)
+
+
+def permission_request_context(hook_stdin: str | bytes | None) -> PermissionRequestContext | None:
+    payload = _json_payload(hook_stdin)
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("hook_event_name") != "PermissionRequest":
+        return None
+    raw_tool_input = payload.get("tool_input")
+    if not isinstance(raw_tool_input, dict):
+        raw_tool_input = {}
+    tool_name = _string_or_default(payload.get("tool_name"), "未知工具")
+    cwd = _optional_string(payload.get("cwd"))
+    session_id = _optional_string(payload.get("session_id"))
+    turn_id = _optional_string(payload.get("turn_id"))
+    command = _permission_command(tool_name, raw_tool_input)
+    description = _permission_description(raw_tool_input)
+    display_command = _truncate_display(_redact_for_display(command), 800)
+    display_description = _truncate_display(_redact_for_display(description), 300)
+    fingerprint_source = display_command or display_description or tool_name
+    command_hash = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+    if session_id or turn_id:
+        route_part = f"{session_id or 'no-session'}:{turn_id or 'no-turn'}"
+    else:
+        route_part = f"cwd:{StateStore.cwd_hash(cwd or '')}"
+    dedupe_key = f"approval:{route_part}:{tool_name}:{command_hash}"
+    return PermissionRequestContext(
+        hook_event_name="PermissionRequest",
+        tool_name=tool_name,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=_truncate_display(_redact_for_display(cwd), 120),
+        command=display_command,
+        description=display_description,
+        raw_tool_input=raw_tool_input,
+        command_hash=command_hash,
+        dedupe_key=dedupe_key,
     )
 
 
@@ -467,19 +578,88 @@ def _extract_stdin_cwd(hook_stdin: str | bytes | None) -> str | None:
     return _extract_stdin_string_field(hook_stdin, "cwd")
 
 
-def _extract_stdin_string_field(hook_stdin: str | bytes | None, field: str) -> str | None:
+def _json_payload(hook_stdin: str | bytes | None):
     if not hook_stdin:
         return None
     if isinstance(hook_stdin, bytes):
         hook_stdin = hook_stdin.decode("utf-8", errors="replace")
     try:
-        payload = json.loads(hook_stdin)
+        return json.loads(hook_stdin)
     except json.JSONDecodeError:
         return None
+
+
+def _extract_stdin_string_field(hook_stdin: str | bytes | None, field: str) -> str | None:
+    payload = _json_payload(hook_stdin)
     if not isinstance(payload, dict):
         return None
     value = payload.get(field)
     return value if isinstance(value, str) else None
+
+
+def _optional_string(value) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _string_or_default(value, default: str) -> str:
+    return _optional_string(value) or default
+
+
+def _permission_command(tool_name: str, tool_input: dict) -> str | None:
+    for key in ("command", "cmd", "path", "file_path"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if tool_input:
+        compact: dict[str, str] = {}
+        for key in ("description", "explanation", "intent", "path", "file_path"):
+            value = tool_input.get(key)
+            if isinstance(value, str) and value.strip():
+                compact[key] = value.strip()
+        if compact:
+            return json.dumps(compact, ensure_ascii=False, sort_keys=True)
+    return f"Codex 请求使用 {tool_name} 执行一项需要审批的操作"
+
+
+def _permission_description(tool_input: dict) -> str | None:
+    for key in ("description", "explanation", "intent"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _redact_for_display(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    patterns = [
+        r"sk-[A-Za-z0-9_\-]{8,}",
+        r"xox[baprs]-[A-Za-z0-9_\-]{8,}",
+        r"Bearer\s+[A-Za-z0-9._\-]+",
+        r"Authorization:\s*[^\s]+",
+        r"(OPENAI_API_KEY|FEISHU_[A-Z0-9_]*|LARK_[A-Z0-9_]*|app_secret|tenant_access_token|user_access_token|refresh_token)=([^\s]+)",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, _redaction_replacement, text, flags=re.IGNORECASE)
+    return text
+
+
+def _redaction_replacement(match: re.Match) -> str:
+    if match.lastindex and match.lastindex >= 1 and "=" in match.group(0):
+        return f"{match.group(1)}=[REDACTED]"
+    return "[REDACTED]"
+
+
+def _truncate_display(value: str | None, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 0)].rstrip() + "…"
 
 
 def _goal_status_from_tool_output(output) -> str | None:

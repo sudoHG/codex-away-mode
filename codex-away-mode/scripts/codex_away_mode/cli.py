@@ -74,6 +74,9 @@ def build_parser():
     notify_stop.add_argument("--json", action="store_true")
     notify_test = notify_subparsers.add_parser("test")
     notify_test.add_argument("--json", action="store_true")
+    notify_permission = notify_subparsers.add_parser("permission-request")
+    notify_permission.add_argument("--hook-json", action="store_true")
+    notify_permission.add_argument("--json", action="store_true")
 
     away = subparsers.add_parser("away")
     away_subparsers = away.add_subparsers(dest="away_command", required=True)
@@ -393,6 +396,55 @@ def _handle_notify(args, paths, *, stdin=None):
         emit_json({"ok": True, "command": "notify test", "chat_id": result.chat_id, "message_id": result.message_id})
         return 0
 
+    if args.notify_command == "permission-request":
+        hook_stdin = _read_hook_stdin(stdin)
+        now = SystemClock().now()
+        notify.capture_hook_payload(
+            paths,
+            event_kind="PermissionRequest",
+            hook_stdin=hook_stdin,
+            cwd=notify.resolve_notify_cwd(None, hook_stdin, os.getcwd()),
+            now=now,
+        )
+        notify.record_hook_invocation(
+            paths,
+            hook_event_name="PermissionRequest",
+            hook_stdin=hook_stdin,
+            cwd=notify.resolve_notify_cwd(None, hook_stdin, os.getcwd()),
+            now=now,
+            hooks_fingerprint=doctor.hooks_fingerprint(paths),
+        )
+        if args.hook_json:
+            try:
+                notify.send_permission_request(
+                    paths,
+                    _NotificationClient(paths, hook_stdin=hook_stdin),
+                    hook_stdin=hook_stdin,
+                    now=now,
+                )
+            except Exception:
+                pass
+            print("{}")
+            return 0
+        try:
+            result = notify.send_permission_request(
+                paths,
+                _NotificationClient(paths, hook_stdin=hook_stdin),
+                hook_stdin=hook_stdin,
+                now=now,
+            )
+        except RuntimeStateError as exc:
+            return _emit_runtime_state_error("notify permission-request", exc)
+        emit_json(
+            {
+                "ok": result.status in {"sent", "suppressed", "skipped"},
+                "command": "notify permission-request",
+                "status": result.status,
+                "detail": result.detail,
+            }
+        )
+        return 0 if result.status in {"sent", "suppressed", "skipped"} else 1
+
     emit_json({"ok": False, "command": command_name(args), "error_code": "unknown_notify_command"})
     return 2
 
@@ -649,6 +701,22 @@ class _NotificationClient:
                 title_context=self._title_context(
                     cwd=payload.get("cwd"),
                     explicit_codex_session_id=payload.get("codex_session_id"),
+                ),
+            )
+        )
+
+    def send_permission_request_card(self, payload):
+        return self._send_card(
+            cards.permission_request_card(
+                project=payload.get("project"),
+                cwd=payload.get("cwd"),
+                tool_name=payload.get("tool_name") or "未知工具",
+                description=payload.get("description"),
+                command=payload.get("command"),
+                now=payload.get("now") or SystemClock().now(),
+                title_context=self._title_context(
+                    cwd=payload.get("cwd"),
+                    explicit_codex_session_id=payload.get("session_id"),
                 ),
             )
         )

@@ -86,6 +86,8 @@ class AppConfig:
     multi_window_enabled: bool = True
     route_key_verified: bool = False
     capture_hook_payloads: bool = False
+    approval_notifications_enabled: bool = True
+    approval_notifications_throttle_seconds: int = 300
 
 
 def load_config(path):

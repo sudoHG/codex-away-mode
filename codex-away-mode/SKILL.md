@@ -1,13 +1,13 @@
 ---
 name: codex-away-mode
-description: Keep a live Codex turn reachable while the user is away, with Feishu completion notifications, Away Mode checkpoint cards, and short-window Feishu replies that continue the current Codex turn. Use when the user asks for Codex Away Mode, Feishu completion notifications, waiting for Feishu replies before continuing, or remote continuation while away from the computer.
+description: Keep a live Codex turn reachable while the user is away, with Feishu completion notifications, approval-request reminders, Away Mode checkpoint cards, and short-window Feishu replies that continue the current Codex turn. Use when the user asks for Codex Away Mode, Feishu completion notifications, Codex approval reminders, waiting for Feishu replies before continuing, or remote continuation while away from the computer.
 ---
 
 # Codex Away Mode
 
 ## Overview
 
-Use this skill to keep a live Codex turn reachable while the user is away. Route Codex completion notifications and short continuation checkpoints through Feishu. Keep user-facing messages concise, Chinese by default, and explicit about what changed, what was verified, what remains unverified, and whether user action is needed.
+Use this skill to keep a live Codex turn reachable while the user is away. Route Codex completion notifications, approval reminders, and short continuation checkpoints through Feishu. Keep user-facing messages concise, Chinese by default, and explicit about what changed, what was verified, what remains unverified, and whether user action is needed.
 
 ## Operating Boundaries
 
@@ -32,6 +32,10 @@ If the local hook contract is installed, stage final-turn summaries through the 
 ```
 
 Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-summary.md`, prompt markers, state databases, or any other Codex Away Mode runtime files under the current workspace cwd. The Stop hook reads the staged summary from the central runtime store by `cwd_hash`. If the summary is missing, the Stop hook sends a no-summary fallback only when a fresh user prompt marker exists and the current transcript does not show an active goal. For in-progress goal-mode continuation turns, do not stage a completion summary until the goal is complete, blocked, or needs human attention; active goal turns must not create fallback noise.
+
+## Approval Reminders
+
+The installer manages a `PermissionRequest` hook. When Codex asks the user to approve an operation, the hook may send a Feishu reminder card. This is only a reminder: the user must still approve or reject in Codex Desktop. Do not tell users they can approve Codex operations in Feishu.
 
 ## Away Mode Workflow
 

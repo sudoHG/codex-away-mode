@@ -48,6 +48,10 @@ class FakeLark:
         self.calls.append(("away_timeout", payload))
         return self.result
 
+    def send_permission_request_card(self, payload):
+        self.calls.append(("permission_request", payload))
+        return self.result
+
 
 def write_summary(path, cwd, extra="done"):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,6 +669,47 @@ def test_send_test_notification_persists_chat_id(tmp_path):
     assert "feishu_chat_id = \"oc_test_chat\"" in paths.config_path.read_text(
         encoding="utf-8"
     )
+
+
+def test_send_permission_request_deduplicates_same_payload(tmp_path):
+    paths = FakePaths(tmp_path)
+    lark = FakeLark(result=SimpleNamespace(message_id="om_permission"))
+    now = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+    hook_stdin = json.dumps(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "cwd": "/workspace/demo",
+            "session_id": "session_1",
+            "turn_id": "turn_1",
+            "tool_input": {
+                "command": "rm /workspace-outside/codex-desktop-permission-target.txt",
+                "description": "需要删除一个外部测试文件。",
+            },
+        }
+    )
+
+    first = notify.send_permission_request(
+        paths,
+        lark,
+        hook_stdin=hook_stdin,
+        now=now,
+    )
+    second = notify.send_permission_request(
+        paths,
+        lark,
+        hook_stdin=hook_stdin,
+        now=now + timedelta(seconds=30),
+    )
+
+    assert first.status == "sent"
+    assert second.status == "suppressed"
+    assert [call[0] for call in lark.calls] == ["permission_request"]
+    stored = StateStore(paths.runtime_state_path).get_approval_notification(
+        first.detail
+    )
+    assert stored["suppressed_count"] == 1
+    assert "/workspace-outside" not in stored["dedupe_key"]
 
 
 def test_notification_modes_and_expired_snooze_are_pure(tmp_path):
