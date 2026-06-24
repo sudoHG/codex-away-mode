@@ -168,7 +168,7 @@ def test_notify_mode_updates_config_under_codex_home(tmp_path, monkeypatch, caps
     assert load_config(paths.config_path).notification_mode == "off"
 
 
-def test_notification_client_summary_card_uses_project_title_footer_cwd_and_time(tmp_path, monkeypatch):
+def test_notification_client_summary_card_uses_project_title_and_compact_footer(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -208,14 +208,14 @@ def test_notification_client_summary_card_uses_project_title_footer_cwd_and_time
     assert "/workspace/Skill-Create" not in text
     assert "- Done" in text
     assert "**时间**：18:00" in text
-    assert "**目录**：Skill-Create" in text
+    assert "**目录**" not in text
     assert "**通知模式**：每轮完成后通知" in text
     assert "告诉Codex" in text
     assert "暂停飞书通知 2 小时" in text
     assert "codex-away-mode notify" not in text
 
 
-def test_notification_client_plain_summary_uses_cwd_fallback_project_footer_and_completion_field(tmp_path, monkeypatch):
+def test_notification_client_plain_summary_uses_cwd_fallback_project_and_compact_footer(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     paths = RuntimePaths.from_environment()
     save_config(paths.config_path, AppConfig(feishu_chat_id="oc_chat"))
@@ -238,7 +238,7 @@ def test_notification_client_plain_summary_uses_cwd_fallback_project_footer_and_
     assert "**完成**" in text
     assert "**摘要**" not in text
     assert "工作目录：/workspace/immichSlides-app" not in text
-    assert "**目录**：immichSlides-app" in text
+    assert "**目录**" not in text
     assert "**时间**：18:00" in text
 
 

@@ -217,7 +217,6 @@ def _away_footer(*, deadline: datetime | str, cwd: str) -> dict[str, Any]:
     lines = [
         f"**回复窗口将于 {_display_time(deadline)} 关闭，请在此之前回复**",
         "可用命令：/延长等待、/状态、/结束等待",
-        f"工作目录：{cwd}",
     ]
     return _markdown("\n".join(f"> {line}" for line in lines))
 
@@ -231,9 +230,6 @@ def _approval_footer(
     first_line_parts: list[str] = []
     if now:
         first_line_parts.append(f"**时间**：{_display_time(now)}")
-    directory = _completion_directory_label(cwd, title_context)
-    if directory:
-        first_line_parts.append(f"**目录**：{directory}")
     lines = []
     if first_line_parts:
         lines.append("> " + " ｜ ".join(first_line_parts))
@@ -345,9 +341,6 @@ def _completion_footer(
     first_line_parts: list[str] = []
     if now:
         first_line_parts.append(f"**时间**：{_display_time(now)}")
-    directory = _completion_directory_label(footer_cwd, title_context)
-    if directory:
-        first_line_parts.append(f"**目录**：{directory}")
     mode = str(footer_mode_text or "").strip()
     if mode:
         first_line_parts.append(f"**通知模式**：{mode}")
@@ -355,20 +348,8 @@ def _completion_footer(
     lines = []
     if first_line_parts:
         lines.append("> " + " ｜ ".join(first_line_parts))
-    lines.append("> 如需修改通知模式，请告诉Codex `暂停飞书通知 2 小时`")
+    lines.append("> 修改通知模式：告诉Codex `暂停飞书通知 2 小时`")
     return _markdown("\n".join(lines))
-
-
-def _completion_directory_label(
-    footer_cwd: str | None,
-    title_context: CardTitleContext | None,
-) -> str | None:
-    project = _compact_title_part(title_context.project_name if title_context else None)
-    if project:
-        return project
-    if footer_cwd:
-        return _project_from_cwd(str(footer_cwd))
-    return None
 
 
 def _compact_title_part(value: str | None) -> str | None:
@@ -525,7 +506,7 @@ def away_early_exit_card(
     ]
     return _card(
         _card_title("Codex 已停止 - Away Mode 已结束", None, "", title_context),
-        [_markdown("\n".join(lines)), _note(f"工作目录：{cwd}\n模式：Away Mode 已结束")],
+        [_markdown("\n".join(lines)), _note("模式：Away Mode 已结束")],
         template="red",
     )
 

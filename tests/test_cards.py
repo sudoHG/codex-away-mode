@@ -96,12 +96,11 @@ def assert_completion_card_v2(card):
     assert "interactive_container" not in card_tags(card)
 
 
-def assert_quoted_away_footer(card, *, deadline="18:30", cwd="/workspace/project"):
+def assert_quoted_away_footer(card, *, deadline="18:30"):
     footer = body_markdown_contents(card)[-1]
     assert footer.splitlines() == [
         f"> **回复窗口将于 {deadline} 关闭，请在此之前回复**",
         "> 可用命令：/延长等待、/状态、/结束等待",
-        f"> 工作目录：{cwd}",
     ]
 
 
@@ -138,8 +137,8 @@ def test_completion_card_title_includes_project_and_compact_footer(monkeypatch):
     assert "**验证**\n- pytest passed" in markdowns
     footer_lines = markdowns[-1].splitlines()
     assert footer_lines == [
-        "> **时间**：18:00 ｜ **目录**：Skill-Create ｜ **通知模式**：每轮完成后通知",
-        "> 如需修改通知模式，请告诉Codex `暂停飞书通知 2 小时`",
+        "> **时间**：18:00 ｜ **通知模式**：每轮完成后通知",
+        "> 修改通知模式：告诉Codex `暂停飞书通知 2 小时`",
     ]
     assert all(line.strip() for line in footer_lines)
     assert "2026-" not in markdowns[-1]
@@ -181,8 +180,8 @@ def test_fallback_completion_card_uses_cwd_project_title_and_footer_cwd(monkeypa
     assert "**工作目录**" not in text
     assert "/workspace/immichSlides-app" not in text
     assert markdowns[-1].splitlines() == [
-        "> **时间**：18:01 ｜ **目录**：immichSlides-app ｜ **通知模式**：每轮完成后通知",
-        "> 如需修改通知模式，请告诉Codex `暂停飞书通知 2 小时`",
+        "> **时间**：18:01 ｜ **通知模式**：每轮完成后通知",
+        "> 修改通知模式：告诉Codex `暂停飞书通知 2 小时`",
     ]
     assert "UTC" not in markdowns[-1]
     assert "忘了写摘要" not in text
@@ -219,7 +218,7 @@ def test_permission_request_card_is_a_desktop_approval_reminder(monkeypatch):
     assert "请回到 Codex Desktop 处理审批" in text
     assert "飞书不能直接完成审批" in text
     assert markdowns[-1].splitlines() == [
-        "> **时间**：16:30 ｜ **目录**：Skill-Create",
+        "> **时间**：16:30",
         "> 如果这不是你预期的操作，请在 Codex Desktop 中拒绝。",
     ]
 
@@ -461,11 +460,12 @@ def test_progress_and_early_exit_cards_exist_and_use_away_time(monkeypatch):
     assert "**需要你看**" in progress_text
     assert "请回 Codex 重新开启 Away Mode" not in progress_text
     assert "**请回复这张卡片继续**" in progress_text
-    assert_quoted_away_footer(progress, cwd="/workspace/demo")
+    assert_quoted_away_footer(progress)
     assert early_exit["header"]["title"]["content"] == "Codex 已停止 - Away Mode 已结束"
     assert early_exit["header"]["template"] == "red"
     assert "Away Mode 回复窗口已关闭" in early_exit_text
     assert "停止时间：06-18 18:30" in early_exit_text
+    assert "工作目录" not in early_exit_text
     assert "2026-" not in progress_text + early_exit_text
     assert "UTC" not in progress_text + early_exit_text
 
