@@ -51,6 +51,7 @@ def build_parser():
     setup_feishu = setup_subparsers.add_parser("feishu")
     setup_feishu.add_argument("--json", action="store_true")
     setup_feishu.add_argument("--device-code")
+    setup_feishu.add_argument("--restart-auth", action="store_true")
 
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--json", action="store_true")
@@ -210,11 +211,24 @@ def _main(argv, *, stdin=None):
         elif args.install_command == "preflight":
             emit_json(install.run_preflight(paths))
         else:
-            emit_json(install.run_install(paths, dry_run=args.dry_run, yes=args.yes))
+            emit_json(
+                install.run_install(
+                    paths,
+                    dry_run=args.dry_run,
+                    yes=args.yes,
+                    ensure_lark_cli=True,
+                )
+            )
         return 0
 
     if args.command == "setup" and args.setup_command == "feishu":
-        emit_json(setup.run_setup_feishu(paths, device_code=args.device_code))
+        emit_json(
+            setup.run_setup_feishu(
+                paths,
+                device_code=args.device_code,
+                restart_auth=args.restart_auth,
+            )
+        )
         return 0
 
     if args.command == "uninstall":
@@ -470,9 +484,6 @@ def _handle_away_wait(args, paths):
         config.default_wait_minutes = wait_minutes
     if poll_interval is not None:
         config.poll_interval_seconds = poll_interval
-    if _lark_cli_unavailable(config.lark_cli_path):
-        emit_json(_lark_cli_error_payload("lark_cli_unavailable", config.lark_cli_path))
-        return 1
     context = {
         "completed": args.completed,
         "changed": args.changed,

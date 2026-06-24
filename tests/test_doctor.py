@@ -271,7 +271,8 @@ def test_doctor_e2e_notify_stages_summary_without_marking_hook_installed(
     assert e2e_state["cwd"] == str(cwd)
     assert e2e_state["summary_key"] == StateStore.cwd_hash(str(cwd))
     assert e2e_state["hooks_fingerprint"].startswith("sha256:")
-    assert "Hook trust state" in report["next_step"]
+    assert "设置 -> 钩子" in report["next_step"]
+    assert "Hook 信任状态" in report["next_step"]
     assert "Stop hook can record execution" not in report["next_step"]
 
 
@@ -287,6 +288,7 @@ def test_doctor_requires_current_hook_trust_after_notify_delivery_verified(tmp_p
     assert "notify_delivery_verified" in report["passed_codes"]
     assert "hook_trust_missing" in report["failed_codes"]
     assert "hook_trust_static_inconclusive" not in report["warnings"]
+    assert "设置 -> 钩子" in report["next_step"]
 
 
 def test_doctor_passes_after_notify_delivery_and_current_hook_trust(tmp_path):
@@ -302,6 +304,30 @@ def test_doctor_passes_after_notify_delivery_and_current_hook_trust(tmp_path):
     assert "notify_delivery_verified" in report["passed_codes"]
     assert "hook_trust_verified" in report["passed_codes"]
     assert "hook_execution_verified" not in report["passed_codes"]
+    assert StateStore(paths.install_state_path).install_status()["status"] == "installed"
+
+
+def test_doctor_accepts_trusted_hash_without_enabled_for_current_codex_hook_state(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    mark_notify_delivery_verified(paths)
+    write_codex_hook_state(
+        paths,
+        stop_enabled=None,
+        prompt_enabled=None,
+        permission_enabled=None,
+    )
+
+    report = doctor.run_doctor(paths)
+
+    assert report["ok"] is True
+    assert "notify_delivery_verified" in report["passed_codes"]
+    assert "hook_trust_verified" in report["passed_codes"]
+    assert "hook_trust_missing" not in report["failed_codes"]
+    assert report["hook_trust"]["stop"]["status"] == "trust_record_present"
+    assert report["hook_trust"]["user_prompt_submit"]["status"] == "trust_record_present"
+    assert report["hook_trust"]["permission_request"]["status"] == "trust_record_present"
     assert StateStore(paths.install_state_path).install_status()["status"] == "installed"
 
 
@@ -411,6 +437,7 @@ def test_doctor_reports_disabled_hook_even_when_old_stop_invocation_exists(tmp_p
     assert "hook_trust_disabled" in report["failed_codes"]
     assert "hook_trust_verified" not in report["passed_codes"]
     assert "hook_execution_verified" not in report["passed_codes"]
+    assert "设置 -> 钩子" in report["next_step"]
     assert StateStore(paths.install_state_path).install_status()["status"] != "installed"
 
 
@@ -969,7 +996,8 @@ def test_install_yes_writes_guidance_hooks_and_requires_hook_trust_verification(
     assert '"command": "/bin/codex-away-mode' not in hooks_json
     assert result["status"] == "hook_trust_pending"
     assert "doctor --e2e-notify" in result["next_step"]
-    assert "trust" in result["next_step"].lower()
+    assert "信任" in result["next_step"]
+    assert "设置 -> 钩子" in result["next_step"]
     assert load_config(paths.config_path).feishu_chat_id == "oc_test_from_notification"
 
 

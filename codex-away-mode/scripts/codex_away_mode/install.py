@@ -18,6 +18,10 @@ class InstallSyncError(RuntimeError):
     """Raised when install cannot safely sync package files."""
 
 
+SUPPORTED_LARK_CLI_VERSION = "1.0.57"
+LARK_CLI_NPM_PACKAGE = f"@larksuite/cli@{SUPPORTED_LARK_CLI_VERSION}"
+
+
 def run_preflight(paths) -> dict[str, Any]:
     away_home = Path(getattr(paths, "away_home", paths.data_dir))
     agents_path = Path(paths.global_agents)
@@ -88,10 +92,16 @@ def run_install(
     source_scripts_dir=None,
     source_skill_dir=None,
     runtime_resolver=None,
+    ensure_lark_cli: bool = False,
+    lark_cli_installer=None,
     lark=None,
 ) -> dict[str, Any]:
     config = load_config(paths.config_path)
-    lark_cli_path = _official_lark_cli_path(config.lark_cli_path)
+    lark_cli_path, lark_cli_install_mode = _planned_lark_cli_path(
+        paths,
+        config.lark_cli_path,
+        ensure_lark_cli=ensure_lark_cli,
+    )
     away_home = Path(getattr(paths, "away_home", paths.data_dir))
     wrapper_path = _wrapper_path(paths)
     scripts_dir = _scripts_dir(paths)
@@ -107,7 +117,12 @@ def run_install(
         f"Would sync Skill discovery entry at {skill_install_dir}.",
         f"Would keep runtime state at {paths.runtime_state_path}.",
         "Would use browser-confirmed config init --new and Feishu permission setup as the guided setup path.",
-        f"Would use official lark-cli at {lark_cli_path}; this installer does not create Open Platform bots.",
+        (
+            f"Would use pinned {LARK_CLI_NPM_PACKAGE} at {lark_cli_path}; "
+            "this installer does not create Open Platform bots."
+            if ensure_lark_cli and lark_cli_install_mode == "managed_pinned"
+            else f"Would use configured lark-cli at {lark_cli_path}; this installer does not create Open Platform bots."
+        ),
     ]
 
     if dry_run or not yes:
@@ -117,6 +132,7 @@ def run_install(
             "planned_changes": planned_changes,
             "changed": [],
             "lark_cli_path": lark_cli_path,
+            "lark_cli_install_mode": lark_cli_install_mode,
             "next_step": "Review the planned global writes, then rerun with --yes.",
         }
 
@@ -135,7 +151,11 @@ def run_install(
     migrated_config = _migrate_legacy_config_if_needed(paths)
     if migrated_config:
         config = load_config(paths.config_path)
-        lark_cli_path = _official_lark_cli_path(config.lark_cli_path)
+        lark_cli_path, lark_cli_install_mode = _planned_lark_cli_path(
+            paths,
+            config.lark_cli_path,
+            ensure_lark_cli=ensure_lark_cli,
+        )
 
     try:
         store = open_install_store(paths)
@@ -172,6 +192,30 @@ def run_install(
             "agent_next_step": status["next_step"],
             "changed": [],
         }
+
+    if ensure_lark_cli:
+        try:
+            lark_cli_path, lark_cli_install_mode = _ensure_supported_lark_cli(
+                paths,
+                config.lark_cli_path,
+                installer=lark_cli_installer,
+            )
+        except InstallSyncError as exc:
+            status = store.update_install_status(
+                status="lark_cli_install_failed",
+                failed_code="lark_cli_install_failed",
+                waiting_for="lark_cli_install",
+                next_step="Install npm or fix network/package access, then rerun codex-away-mode install --yes --json.",
+            )
+            return {
+                "ok": False,
+                "dry_run": False,
+                "failed_code": "lark_cli_install_failed",
+                "detail": str(exc),
+                "user_message": "Codex Away Mode 安装固定版本 lark-cli 失败，飞书配置向导暂时不能继续。",
+                "agent_next_step": status["next_step"],
+                "changed": [],
+            }
 
     changed = []
     degraded_codes: list[str] = []
@@ -245,9 +289,10 @@ def run_install(
         status="hook_trust_pending",
         waiting_for="hook_trust",
         next_step=(
-            "Ask the user to trust the managed hooks in Codex Desktop Settings -> Hooks, "
-            "run codex-away-mode doctor --e2e-notify --json to verify notification delivery, "
-            "then run codex-away-mode doctor --json."
+            "请让用户打开 Codex Desktop 设置 -> 钩子（英文界面为 Settings -> Hooks），"
+            "信任 Codex Away Mode 托管 Hook；"
+            "然后运行 codex-away-mode doctor --e2e-notify --json 验证通知投递链，"
+            "再运行 codex-away-mode doctor --json 检查当前 Hook 信任状态。"
         ),
     )
 
@@ -274,12 +319,14 @@ def run_install(
         "scripts_sync_mode": scripts_sync_mode,
         "repaired_orphan_away_sessions": len(repaired_orphans),
         "lark_cli_path": lark_cli_path,
+        "lark_cli_install_mode": lark_cli_install_mode,
         "wrapper_path": str(wrapper_path),
         "status": "hook_trust_pending",
         "next_step": (
-            "Run codex-away-mode doctor --e2e-notify --json to verify notification delivery. "
-            "Then ask the user to trust the managed hooks in Codex Desktop Settings -> Hooks "
-            "and run codex-away-mode doctor --json."
+            "请先运行 codex-away-mode doctor --e2e-notify --json 验证通知投递链。"
+            "然后请用户打开 Codex Desktop 设置 -> 钩子（英文界面为 Settings -> Hooks），"
+            "信任 Codex Away Mode 托管 Hook；最后运行 codex-away-mode doctor --json "
+            "检查当前 Hook 信任状态。"
         ),
     }
 
@@ -467,6 +514,90 @@ def _official_lark_cli_path(configured_path: str | None) -> str:
     if configured_path and configured_path != "lark-cli":
         return configured_path
     return shutil.which(configured_path or "lark-cli") or (configured_path or "lark-cli")
+
+
+def _planned_lark_cli_path(paths, configured_path: str | None, *, ensure_lark_cli: bool) -> tuple[str, str]:
+    if ensure_lark_cli and _should_use_managed_lark_cli(paths, configured_path):
+        return str(_managed_lark_cli_path(paths)), "managed_pinned"
+    return _official_lark_cli_path(configured_path), "custom" if configured_path and configured_path != "lark-cli" else "path"
+
+
+def _should_use_managed_lark_cli(paths, configured_path: str | None) -> bool:
+    if not configured_path or configured_path == "lark-cli":
+        return True
+    try:
+        configured = Path(configured_path).expanduser().resolve()
+        managed_prefix = _managed_lark_cli_prefix(paths).resolve()
+    except OSError:
+        return False
+    return str(configured).startswith(str(managed_prefix) + os.sep)
+
+
+def _managed_lark_cli_prefix(paths) -> Path:
+    return Path(paths.data_dir) / "npm"
+
+
+def _managed_lark_cli_path(paths) -> Path:
+    return _managed_lark_cli_prefix(paths) / "node_modules" / ".bin" / "lark-cli"
+
+
+def _ensure_supported_lark_cli(paths, configured_path: str | None, *, installer=None) -> tuple[str, str]:
+    if not _should_use_managed_lark_cli(paths, configured_path):
+        return _official_lark_cli_path(configured_path), "custom"
+    prefix = _managed_lark_cli_prefix(paths)
+    binary = _managed_lark_cli_path(paths)
+    if not _lark_cli_binary_is_supported(binary):
+        installer = installer or _install_pinned_lark_cli
+        binary = installer(package=LARK_CLI_NPM_PACKAGE, prefix=prefix)
+    if not binary.exists():
+        raise InstallSyncError(f"pinned lark-cli binary was not created at {binary}")
+    return str(binary), "managed_pinned"
+
+
+def _lark_cli_binary_is_supported(binary: Path) -> bool:
+    if not binary.exists() or not os.access(binary, os.X_OK):
+        return False
+    try:
+        completed = subprocess.run(
+            [str(binary), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return completed.returncode == 0 and SUPPORTED_LARK_CLI_VERSION in output
+
+
+def _install_pinned_lark_cli(*, package: str, prefix: Path) -> Path:
+    npm = shutil.which("npm")
+    if not npm:
+        raise InstallSyncError("npm not found; cannot install pinned lark-cli package")
+    prefix.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        [
+            npm,
+            "install",
+            package,
+            "--prefix",
+            str(prefix),
+            "--no-audit",
+            "--no-fund",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+        raise InstallSyncError(f"npm install {package} failed: {detail}")
+    binary = prefix / "node_modules" / ".bin" / "lark-cli"
+    if not binary.exists():
+        raise InstallSyncError(f"npm install {package} did not create {binary}")
+    return binary
 
 
 def _backup_existing(path: Path, backup_dir) -> Path | None:

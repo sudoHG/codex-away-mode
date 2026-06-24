@@ -575,6 +575,23 @@ def test_install_status_json_reports_persisted_state(tmp_path, monkeypatch, caps
     assert payload["next_step"] == "Ask user to trust hooks."
 
 
+def test_setup_feishu_passes_restart_auth_flag(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    captured_kwargs = {}
+
+    def fake_setup(paths, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"ok": True, "status": "captured"}
+
+    monkeypatch.setattr(cli.setup, "run_setup_feishu", fake_setup)
+
+    code, captured = run_cli(capsys, "setup", "feishu", "--restart-auth", "--json")
+
+    assert code == 0
+    assert parse_stdout(captured)["status"] == "captured"
+    assert captured_kwargs["restart_auth"] is True
+
+
 def test_install_dry_run_accepts_json_flag(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setenv("CODEX_AWAY_HOME", str(tmp_path / "away-home"))

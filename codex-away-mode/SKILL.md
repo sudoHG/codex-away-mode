@@ -21,7 +21,7 @@ Use this skill to keep a live Codex turn reachable while the user is away. Route
 
 ## Setup
 
-For installation, permissions, hook trust, and verification, read `references/install.md`. Treat `install --yes` as a setup step, not completion. Feishu binding must be verified with `setup feishu`. `doctor --e2e-notify --json` verifies notification delivery only; it does not prove Codex Desktop trusted the Hook. Current Hook trust is checked by `doctor --json` against Codex Desktop's Hook state. Historical Hook execution records are diagnostic only and must not be treated as proof that the Hook is still trusted.
+For installation, permissions, hook trust, and verification, read `references/install.md`. Treat `install --yes` as a setup step, not completion. The installer manages a pinned private `@larksuite/cli` dependency; do not default to global or latest `lark-cli` during setup. Feishu binding must be verified with `setup feishu`. If Feishu app config or user OAuth is pending, tell the user to confirm in the browser and then rerun `setup feishu --json`; do not ask them to run `lark-cli` commands, copy device codes, or use `--device-code` on the main path. Use `setup feishu --restart-auth --json` only when authorization expired or the user explicitly wants a fresh authorization. `doctor --e2e-notify --json` verifies notification delivery only; it does not prove Codex Desktop trusted the Hook. Current Hook trust is checked by `doctor --json` against Codex Desktop's Hook state. Historical Hook execution records are diagnostic only and must not be treated as proof that the Hook is still trusted.
 
 ## Completion Notifications
 

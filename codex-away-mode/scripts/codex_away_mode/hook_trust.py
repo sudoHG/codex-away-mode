@@ -47,14 +47,16 @@ def evaluate_hook_trust(paths) -> dict[str, Any]:
             disabled.append(event_key)
             trusted[event_key] = {"status": "disabled", "trust_key": trust_key}
             continue
-        if event_key == "permission_request" and entry.get("trusted_hash"):
+        if entry.get("enabled") is True:
+            trusted[event_key] = {"status": "trusted", "trust_key": trust_key}
+            continue
+        if entry.get("trusted_hash"):
             trusted[event_key] = {"status": "trust_record_present", "trust_key": trust_key}
             continue
         if entry.get("enabled") is not True:
             missing.append(event_key)
             trusted[event_key] = {"status": "missing_enabled", "trust_key": trust_key}
             continue
-        trusted[event_key] = {"status": "trusted", "trust_key": trust_key}
 
     if disabled:
         return {
@@ -64,7 +66,7 @@ def evaluate_hook_trust(paths) -> dict[str, Any]:
             "hooks": trusted,
             "next_step": (
                 "Codex Away Mode 的 Hook 当前在 Codex Desktop 里被关闭。请打开 "
-                "Codex Desktop Settings -> Hooks，重新信任 Codex Away Mode 的 Stop、"
+                "Codex Desktop 设置 -> 钩子（英文界面为 Settings -> Hooks），重新信任 Codex Away Mode 的 Stop、"
                 "UserPromptSubmit 和 PermissionRequest Hook，然后重新运行 codex-away-mode doctor --json。"
             ),
         }
@@ -76,7 +78,7 @@ def evaluate_hook_trust(paths) -> dict[str, Any]:
             "hooks": trusted,
             "next_step": (
                 "Hook 已安装，但还没有在 Codex Desktop 中找到对应的信任记录。请打开 "
-                "Codex Desktop Settings -> Hooks，信任 Codex Away Mode Hook，然后重新运行 "
+                "Codex Desktop 设置 -> 钩子（英文界面为 Settings -> Hooks），信任 Codex Away Mode Hook，然后重新运行 "
                 "codex-away-mode doctor --json。"
             ),
         }
@@ -234,6 +236,7 @@ def _parse_string(value: str) -> str:
 def _unknown_format_next_step() -> str:
     return (
         "当前 Codex 版本的 Hook 信任状态格式无法静态读取。如果飞书完成通知能正常收到，"
-        "可以继续使用；如果收不到，请打开 Codex Desktop Settings -> Hooks 重新信任 "
+        "可以继续使用；如果收不到，请打开 Codex Desktop 设置 -> 钩子"
+        "（英文界面为 Settings -> Hooks）重新信任 "
         "Codex Away Mode Hook。"
     )

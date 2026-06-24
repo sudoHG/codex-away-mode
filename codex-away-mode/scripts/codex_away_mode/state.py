@@ -1226,6 +1226,22 @@ class StateStore:
         except json.JSONDecodeError:
             return row["value"]
 
+    def clear_install_state(self, key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM install_state WHERE key = ?", (key,))
+            conn.execute("COMMIT")
+
+    def set_feishu_auth_pending(self, payload: dict[str, Any]) -> None:
+        self.set_install_state("feishu_auth_pending", payload)
+
+    def feishu_auth_pending(self) -> dict[str, Any] | None:
+        value = self.get_install_state("feishu_auth_pending")
+        return value if isinstance(value, dict) else None
+
+    def clear_feishu_auth_pending(self) -> None:
+        self.clear_install_state("feishu_auth_pending")
+
     def set_resume_token_hash(
         self,
         *,

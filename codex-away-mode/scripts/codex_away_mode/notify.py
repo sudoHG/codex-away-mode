@@ -452,7 +452,22 @@ def skip_cwd_reason(paths, cwd: str | None) -> str | None:
 
 
 def send_test_notification(paths, lark):
-    result = lark.send_test_notification()
+    if hasattr(lark, "send_test_notification"):
+        result = lark.send_test_notification()
+    else:
+        config = load_config(Path(paths.config_path))
+        card = cards.completion_card(
+            title="Codex Away Mode 测试通知",
+            fields={"完成": "测试通知已发送。"},
+            footer_mode_text=cards.notification_mode_footer_text(config.notification_mode),
+            now=datetime.now(timezone.utc),
+        )
+        if config.feishu_chat_id:
+            result = lark.send_interactive_card(chat_id=config.feishu_chat_id, card=card)
+        elif config.feishu_user_id:
+            result = lark.send_interactive_card(user_id=config.feishu_user_id, card=card)
+        else:
+            raise RuntimeError("Missing feishu_chat_id or feishu_user_id; run setup feishu first.")
     chat_id = getattr(result, "chat_id", None)
     if chat_id:
         config = load_config(Path(paths.config_path))

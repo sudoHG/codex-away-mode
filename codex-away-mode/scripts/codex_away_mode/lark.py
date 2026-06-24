@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import tempfile
+import time
+import webbrowser
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -37,6 +42,7 @@ class LarkMessage:
 class LarkCli:
     def __init__(self, binary: str = "lark-cli", runner: Runner | None = None, timeout: int = 30):
         self.binary = binary
+        self._custom_runner = runner is not None
         self.runner = runner or self._run_subprocess
         self.timeout = timeout
         self.runner_calls: list[tuple[list[str], int]] = []
@@ -116,6 +122,10 @@ class LarkCli:
                 ["im", "+chat-messages-list", "--help"],
                 ["--as", "--chat-id", "--user-id"],
             ),
+            "config_init": (
+                ["config", "init", "--help"],
+                ["--new"],
+            ),
         }
         missing: dict[str, list[str]] = {}
         for name, (args, required) in checks.items():
@@ -131,17 +141,86 @@ class LarkCli:
             }
         return {"ok": True}
 
-    def config_init_new(self) -> dict[str, Any]:
-        return self._run_json(["config", "init", "--new", "--json"])
+    def app_config_status(self) -> dict[str, Any]:
+        config_command = [self.binary, "config", "init", "--new"]
+        try:
+            data = self._run_json_allow_error(["config", "show"])
+        except LarkCliError as exc:
+            return {
+                "ok": False,
+                "status": "lark_app_config_unknown",
+                "failed_code": "lark_app_config_unverified",
+                "config_command": config_command,
+                "error": str(exc),
+            }
+        if data.get("ok") is False:
+            error = data.get("error") or {}
+            if error.get("subtype") == "not_configured" or error.get("type") == "config":
+                return {
+                    "ok": False,
+                    "status": "lark_app_config_pending",
+                    "failed_code": "lark_app_config_missing",
+                    "config_command": config_command,
+                    "detail": data,
+                }
+            return {
+                "ok": False,
+                "status": "lark_app_config_unknown",
+                "failed_code": "lark_app_config_unverified",
+                "config_command": config_command,
+                "detail": data,
+            }
+        return {"ok": True, "configured": True, "detail": data}
+
+    def start_app_config_init(
+        self,
+        *,
+        opener: Callable[[str], bool] | None = None,
+        wait_seconds: int = 90,
+    ) -> dict[str, Any]:
+        args = ["config", "init", "--new"]
+        opener = opener or self._open_url
+        if self._custom_runner:
+            return self._start_app_config_init_with_runner(
+                args,
+                opener=opener,
+                wait_seconds=wait_seconds,
+            )
+        return self._start_app_config_init_background(
+            args,
+            opener=opener,
+            wait_seconds=wait_seconds,
+        )
 
     def auth_status(self) -> dict[str, Any]:
         return self._run_json(["auth", "status", "--json", "--verify"])
 
-    def auth_login_start(self) -> dict[str, Any]:
-        return self._run_json(["auth", "login", "--recommend", "--no-wait", "--json"])
+    def auth_login_start(self, opener: Callable[[str], bool] | None = None) -> dict[str, Any]:
+        result = self._run_json(["auth", "login", "--recommend", "--no-wait", "--json"])
+        url = self._extract_json_field(
+            result,
+            ("verification_url", "verification_uri_complete", "verification_uri"),
+        )
+        browser_opened = self._try_open_url(url, opener or self._open_url) if url else False
+        if url and "verification_url" not in result:
+            result["verification_url"] = url
+        result["browser_opened"] = browser_opened
+        return result
 
-    def auth_login_complete(self, device_code: str) -> dict[str, Any]:
-        return self._run_json(["auth", "login", "--device-code", device_code, "--json"])
+    def auth_login_complete(self, device_code: str, *, timeout: int = 90) -> dict[str, Any]:
+        try:
+            return self._run_json(
+                ["auth", "login", "--device-code", device_code, "--json"],
+                timeout=timeout,
+            )
+        except LarkCliError as exc:
+            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
+                return {
+                    "ok": False,
+                    "status": "feishu_authorization_still_pending",
+                    "failed_code": "feishu_authorization_still_pending",
+                }
+            raise
 
     def _send_args(
         self,
@@ -170,13 +249,16 @@ class LarkCli:
             "--json",
         ]
 
-    def _run_json(self, args: list[str]) -> dict[str, Any]:
-        self.runner_calls.append((list(args), self.timeout))
+    def _run_json(self, args: list[str], *, timeout: int | None = None) -> dict[str, Any]:
+        command_timeout = self.timeout if timeout is None else timeout
+        self.runner_calls.append((list(args), command_timeout))
         try:
-            raw = self.runner(args, self.timeout)
+            raw = self.runner(args, command_timeout)
         except subprocess.CalledProcessError as exc:
             detail = exc.stderr or exc.stdout or str(exc)
             raise LarkCliError(f"lark-cli failed: {self._redact(str(detail))}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise LarkCliError("lark-cli timed out waiting for Feishu authorization") from exc
         except OSError as exc:
             raise LarkCliError(f"lark-cli failed: {self._redact(str(exc))}") from exc
 
@@ -187,6 +269,25 @@ class LarkCli:
                 detail = raw.stderr or raw.stdout or f"exit {raw.returncode}"
                 raise LarkCliError(f"lark-cli failed: {self._redact(str(detail))}")
             raw = raw.stdout
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not isinstance(raw, str):
+            raise InvalidJsonError(f"lark-cli returned unsupported output: {type(raw).__name__}")
+        return self._parse_json(raw)
+
+    def _run_json_allow_error(self, args: list[str]) -> dict[str, Any]:
+        self.runner_calls.append((list(args), self.timeout))
+        try:
+            raw = self.runner(args, self.timeout)
+        except subprocess.CalledProcessError as exc:
+            raw = exc.stderr or exc.stdout or str(exc)
+        except OSError as exc:
+            raise LarkCliError(f"lark-cli failed: {self._redact(str(exc))}") from exc
+
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, subprocess.CompletedProcess):
+            raw = (raw.stdout or "") + "\n" + (raw.stderr or "")
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
         if not isinstance(raw, str):
@@ -219,11 +320,149 @@ class LarkCli:
     def _run_subprocess(self, args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [self.binary, *args],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout,
         )
+
+    def _start_app_config_init_with_runner(
+        self,
+        args: list[str],
+        *,
+        opener: Callable[[str], bool],
+        wait_seconds: int,
+    ) -> dict[str, Any]:
+        self.runner_calls.append((list(args), wait_seconds))
+        try:
+            raw = self.runner(args, wait_seconds)
+        except subprocess.TimeoutExpired as exc:
+            stdout = getattr(exc, "stdout", None) or getattr(exc, "output", None)
+            text = self._output_text(stdout) + "\n" + self._output_text(exc.stderr)
+            return self._pending_app_config_result(
+                text,
+                opener=opener,
+                process_id=None,
+                debug_command=[self.binary, *args],
+            )
+        except subprocess.CalledProcessError as exc:
+            detail = exc.stderr or exc.stdout or str(exc)
+            return self._app_config_init_failed(detail, debug_command=[self.binary, *args])
+        except OSError as exc:
+            return self._app_config_init_failed(str(exc), debug_command=[self.binary, *args])
+
+        if isinstance(raw, subprocess.CompletedProcess):
+            text = self._output_text(raw.stdout) + "\n" + self._output_text(raw.stderr)
+            url = self._extract_url(text)
+            browser_opened = self._try_open_url(url, opener) if url else False
+            if raw.returncode != 0:
+                return self._app_config_init_failed(text, debug_command=[self.binary, *args])
+            status = self.app_config_status()
+            if status.get("ok"):
+                status.update(
+                    {
+                        "verification_url": url,
+                        "browser_opened": browser_opened,
+                        "debug_command": [self.binary, *args],
+                    }
+                )
+                return status
+            return self._pending_app_config_result(
+                text,
+                opener=opener,
+                process_id=None,
+                debug_command=[self.binary, *args],
+            )
+        text = self._output_text(raw)
+        return self._pending_app_config_result(
+            text,
+            opener=opener,
+            process_id=None,
+            debug_command=[self.binary, *args],
+        )
+
+    def _start_app_config_init_background(
+        self,
+        args: list[str],
+        *,
+        opener: Callable[[str], bool],
+        wait_seconds: int,
+    ) -> dict[str, Any]:
+        debug_command = [self.binary, *args]
+        fd, log_path = tempfile.mkstemp(prefix="codex-away-lark-config-", suffix=".log")
+        log_file = os.fdopen(fd, "wb", buffering=0)
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            process = subprocess.Popen(
+                debug_command,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log_file.close()
+            self._unlink_quietly(log_path)
+            return self._app_config_init_failed(str(exc), debug_command=debug_command)
+        finally:
+            try:
+                log_file.close()
+            except Exception:
+                pass
+
+        deadline = time.monotonic() + max(wait_seconds, 1)
+        last_text = ""
+        try:
+            while time.monotonic() < deadline:
+                last_text = self._read_text_file(log_path)
+                url = self._extract_url(last_text)
+                if url:
+                    browser_opened = self._try_open_url(url, opener)
+                    return {
+                        "ok": False,
+                        "status": "lark_app_config_browser_pending",
+                        "waiting_for": "feishu_browser_confirmation",
+                        "verification_url": url,
+                        "browser_opened": browser_opened,
+                        "process_id": process.pid,
+                        "debug_command": debug_command,
+                        "developer_detail": {
+                            "command": debug_command,
+                            "stderr_excerpt": self._redact(last_text[:800]),
+                        },
+                    }
+                return_code = process.poll()
+                if return_code is not None:
+                    last_text = self._read_text_file(log_path)
+                    if return_code == 0:
+                        status = self.app_config_status()
+                        if status.get("ok"):
+                            status.update(
+                                {
+                                    "verification_url": self._extract_url(last_text),
+                                    "browser_opened": False,
+                                    "debug_command": debug_command,
+                                }
+                            )
+                            return status
+                    return self._app_config_init_failed(last_text, debug_command=debug_command)
+                time.sleep(0.2)
+            if process.poll() is None:
+                process.terminate()
+            return {
+                "ok": False,
+                "failed_code": "lark_app_config_url_missing",
+                "status": "lark_app_config_failed",
+                "user_message": "飞书配置流程已经启动，但没有拿到可打开的确认链接。请把这段输出交给 Agent 排查。",
+                "agent_next_step": "Inspect developer_detail and retry setup feishu after confirming lark-cli config init output.",
+                "debug_command": debug_command,
+                "developer_detail": {
+                    "command": debug_command,
+                    "stderr_excerpt": self._redact(last_text[:800]),
+                },
+            }
+        finally:
+            self._unlink_quietly(log_path)
 
     def _parse_json(self, output: str) -> dict[str, Any]:
         decoder = json.JSONDecoder()
@@ -237,6 +476,138 @@ class LarkCli:
             if isinstance(data, dict):
                 return data
         raise InvalidJsonError("lark-cli output did not contain valid JSON")
+
+    def _pending_app_config_result(
+        self,
+        text: str,
+        *,
+        opener: Callable[[str], bool],
+        process_id: int | None,
+        debug_command: list[str],
+    ) -> dict[str, Any]:
+        url = self._extract_url(text)
+        browser_opened = self._try_open_url(url, opener) if url else False
+        if not url:
+            return {
+                "ok": False,
+                "failed_code": "lark_app_config_url_missing",
+                "status": "lark_app_config_failed",
+                "user_message": "飞书配置流程已经启动，但没有拿到可打开的确认链接。请把这段输出交给 Agent 排查。",
+                "agent_next_step": "Inspect developer_detail and retry setup feishu after confirming lark-cli config init output.",
+                "debug_command": debug_command,
+                "developer_detail": {
+                    "command": debug_command,
+                    "stderr_excerpt": self._redact(text[:800]),
+                },
+            }
+        return {
+            "ok": False,
+            "status": "lark_app_config_browser_pending",
+            "waiting_for": "feishu_browser_confirmation",
+            "verification_url": url,
+            "browser_opened": browser_opened,
+            "process_id": process_id,
+            "debug_command": debug_command,
+            "developer_detail": {
+                "command": debug_command,
+                "stderr_excerpt": self._redact(text[:800]),
+            },
+        }
+
+    def _app_config_init_failed(self, detail: Any, *, debug_command: list[str]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "failed_code": "lark_app_config_init_failed",
+            "status": "lark_app_config_failed",
+            "user_message": "飞书官方配置流程启动失败，当前还不能继续安装飞书通知。",
+            "agent_next_step": "Inspect developer_detail, then decide whether to retry, reinstall the pinned lark-cli, or use the manual advanced path.",
+            "debug_command": debug_command,
+            "developer_detail": {
+                "command": debug_command,
+                "redacted_error": self._redact(self._output_text(detail)[:800]),
+            },
+        }
+
+    def _try_open_url(self, url: str | None, opener: Callable[[str], bool]) -> bool:
+        if not url:
+            return False
+        try:
+            return bool(opener(url))
+        except Exception:
+            return False
+
+    def _open_url(self, url: str) -> bool:
+        try:
+            if webbrowser.open(url):
+                return True
+        except Exception:
+            pass
+        command: list[str] | None = None
+        if os.name == "nt":
+            try:
+                os.startfile(url)  # type: ignore[attr-defined]
+                return True
+            except Exception:
+                return False
+        if shutil.which("open"):
+            command = ["open", url]
+        elif shutil.which("xdg-open"):
+            command = ["xdg-open", url]
+        if not command:
+            return False
+        try:
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except OSError:
+            return False
+
+    def _extract_url(self, text: str) -> str | None:
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+        match = re.search(r"https?://[^\s<>()\[\]\"']+", text)
+        if not match:
+            return None
+        return match.group(0).rstrip(".,;")
+
+    def _extract_json_field(self, value: Any, keys: tuple[str, ...]) -> str | None:
+        if isinstance(value, dict):
+            for key in keys:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+            for child in value.values():
+                found = self._extract_json_field(child, keys)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = self._extract_json_field(child, keys)
+                if found:
+                    return found
+        return None
+
+    def _output_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            return value
+        if isinstance(value, subprocess.CompletedProcess):
+            return self._output_text(value.stdout) + "\n" + self._output_text(value.stderr)
+        return str(value)
+
+    def _read_text_file(self, path: str) -> str:
+        try:
+            with open(path, "rb") as handle:
+                return handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def _unlink_quietly(self, path: str) -> None:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     def _map_send_result(self, data: dict[str, Any]) -> SendResult:
         payload = data.get("data", data)

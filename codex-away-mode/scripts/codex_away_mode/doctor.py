@@ -175,7 +175,14 @@ def run_doctor(
                     return _finalize(report)
                 _degrade(report, warning_code, trust_result["next_step"])
                 return _finalize(report)
-            _degrade(report, "hook_trust_unverified", trust_result.get("next_step", "请在 Codex Desktop Settings -> Hooks 中信任 Codex Away Mode Hook。"))
+            _degrade(
+                report,
+                "hook_trust_unverified",
+                trust_result.get(
+                    "next_step",
+                    "请在 Codex Desktop 设置 -> 钩子（英文界面为 Settings -> Hooks）中信任 Codex Away Mode Hook。",
+                ),
+            )
             return _finalize(report)
         _degrade(
             report,
@@ -254,7 +261,11 @@ def run_e2e_notify(
     return {
         "ok": True,
         "status": "notify_delivery_verified",
-        "next_step": "Notification delivery verified. Run codex-away-mode doctor --json to check the current Codex Desktop Hook trust state.",
+        "next_step": (
+            "通知投递链已验证。请确认 Codex Desktop 设置 -> 钩子"
+            "（英文界面为 Settings -> Hooks）中已信任 Codex Away Mode Hook，"
+            "然后运行 codex-away-mode doctor --json 检查当前 Hook 信任状态。"
+        ),
     }
 
 

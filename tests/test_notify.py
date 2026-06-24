@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from codex_away_mode import notify
+from codex_away_mode.config import AppConfig, save_config
 from codex_away_mode.state import StateStore
 
 
@@ -667,6 +668,30 @@ def test_send_test_notification_persists_chat_id(tmp_path):
 
     assert result.chat_id == "oc_test_chat"
     assert "feishu_chat_id = \"oc_test_chat\"" in paths.config_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_send_test_notification_supports_real_lark_card_interface(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(paths.config_path, AppConfig(feishu_user_id="ou_user"))
+
+    class CardOnlyLark:
+        def __init__(self):
+            self.calls = []
+
+        def send_interactive_card(self, *, card, user_id=None, chat_id=None):
+            self.calls.append({"card": card, "user_id": user_id, "chat_id": chat_id})
+            return SimpleNamespace(chat_id="oc_from_real_lark", message_id="om_test")
+
+    lark = CardOnlyLark()
+
+    result = notify.send_test_notification(paths, lark)
+
+    assert result.chat_id == "oc_from_real_lark"
+    assert lark.calls[0]["user_id"] == "ou_user"
+    assert lark.calls[0]["chat_id"] is None
+    assert "feishu_chat_id = \"oc_from_real_lark\"" in paths.config_path.read_text(
         encoding="utf-8"
     )
 

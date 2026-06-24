@@ -8,7 +8,7 @@ The installable Skill package is `codex-away-mode/`.
 
 ## Quick Start
 
-Ask Codex to read this repository and install Codex Away Mode. The agent should run the bundled installer, explain global writes, guide Feishu authorization, ask the user to trust Hooks, verify notification delivery, then run `doctor --json` to confirm the current Codex Desktop Hook trust state.
+Ask Codex to read this repository and install Codex Away Mode. The agent should run the bundled installer, explain global writes, guide Feishu authorization, ask the user to trust Hooks in Codex Desktop 设置 -> 钩子 (English UI: Settings -> Hooks), verify notification delivery, then run `doctor --json` to confirm the current Codex Desktop Hook trust state.
 
 ```bash
 ./codex-away-mode/scripts/codex-away-mode install --dry-run --json
@@ -17,6 +17,19 @@ ${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode setup feishu --js
 ${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode doctor --e2e-notify --json
 ${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode doctor --json
 ```
+
+The installer pins the Feishu CLI dependency to a verified private npm install under
+`${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/npm`; it does not rely on a global
+`lark-cli` or a moving `latest` package. If Feishu app config has not been initialized,
+`setup feishu` starts the official browser-confirmed app setup flow for the user. The
+agent should ask the user to confirm in the browser, then rerun `setup feishu --json`;
+do not make non-technical users run `lark-cli` commands manually.
+
+If Feishu user OAuth is needed, `setup feishu` opens or returns one authorization
+URL and stores the pending authorization state locally. After the user confirms in
+the browser, rerun `setup feishu --json`; do not ask the user to copy a device code
+or run `lark-cli` manually. Only use `setup feishu --restart-auth --json` when the
+current authorization has expired or the user explicitly wants to restart it.
 
 Read the Skill first:
 
