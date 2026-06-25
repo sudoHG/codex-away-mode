@@ -101,6 +101,17 @@ def hook_stdin_for_transcript(path):
     return json.dumps({"transcript_path": str(path)})
 
 
+def hook_stdin_for_session(path, *, session_id="thread_123", cwd="/workspace/demo"):
+    return json.dumps(
+        {
+            "cwd": cwd,
+            "session_id": session_id,
+            "turn_id": "turn_stop",
+            "transcript_path": str(path),
+        }
+    )
+
+
 def test_mark_prompt_writes_hashed_marker_without_cwd_leak(tmp_path):
     paths = FakePaths(tmp_path)
     workspace = tmp_path / "workspace" / "demo"
@@ -219,12 +230,47 @@ def test_completion_summary_matches_equivalent_normalized_cwd(tmp_path, monkeypa
     assert lark.calls[0][0] == "summary"
 
 
+def test_completion_summary_routes_by_session_when_stage_cwd_and_stop_cwd_differ(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(notify.tempfile, "gettempdir", lambda: "/not-the-pytest-temp")
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    paths = FakePaths(tmp_path / "codex-home")
+    outer_cwd = "/workspace/immichSlides-app"
+    worktree_cwd = "/workspace/immichSlides-app/worktrees/playback-fix"
+    transcript = tmp_path / "session.jsonl"
+    write_goal_transcript(transcript, [])
+    notify.stage_summary(
+        paths,
+        cwd=worktree_cwd,
+        summary_markdown="summary from worktree",
+        now=now,
+        session_id="thread_123",
+    )
+    lark = FakeLark()
+
+    result = notify.send_completion_from_summary(
+        paths,
+        lark,
+        cwd=outer_cwd,
+        now=now + timedelta(minutes=1),
+        hook_stdin=hook_stdin_for_session(
+            transcript,
+            session_id="thread_123",
+            cwd=outer_cwd,
+        ),
+    )
+
+    assert result.status == "summary_sent"
+    assert lark.calls == [("summary", "summary from worktree")]
+
+
 def test_completion_summary_accepts_child_project_inside_current_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(notify.tempfile, "gettempdir", lambda: "/not-the-pytest-temp")
     now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
     paths = FakePaths(tmp_path / "codex-home")
     workspace = tmp_path / "workspace"
-    child_project = workspace / "Skill项目" / "飞书通知与AwayMode"
+    child_project = workspace / "Skill项目" / "示例Skill"
     child_project.mkdir(parents=True)
     cwd = str(workspace)
     notify.stage_summary(paths, cwd=cwd, summary_markdown="summary", now=now)
@@ -345,6 +391,34 @@ def test_completion_sends_missing_summary_fallback_when_marker_is_fresh_and_no_g
     assert StateStore(paths.runtime_state_path).get_prompt_marker(cwd) is None
 
 
+def test_missing_summary_fallback_after_long_task_when_goal_none(tmp_path):
+    start = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+    stop = start + timedelta(hours=2)
+    paths = FakePaths(tmp_path)
+    cwd = "/workspace/demo"
+    transcript = tmp_path / "session.jsonl"
+    write_goal_transcript(transcript, [])
+    notify.mark_prompt(
+        paths,
+        cwd=cwd,
+        now=start,
+        hook_stdin=json.dumps({"cwd": cwd, "session_id": "thread_123"}),
+    )
+    lark = FakeLark()
+
+    result = notify.send_completion_from_summary(
+        paths,
+        lark,
+        cwd=cwd,
+        now=stop,
+        hook_stdin=hook_stdin_for_session(transcript, session_id="thread_123", cwd=cwd),
+    )
+
+    assert result.status == "fallback_sent"
+    assert result.detail == "summary_missing"
+    assert lark.calls == [("fallback", cwd)]
+
+
 def test_completion_skips_missing_summary_fallback_while_goal_is_active_and_keeps_marker(tmp_path):
     now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
     paths = FakePaths(tmp_path)
@@ -368,6 +442,40 @@ def test_completion_skips_missing_summary_fallback_while_goal_is_active_and_keep
     assert StateStore(paths.runtime_state_path).get_prompt_marker(cwd) is not None
 
 
+def test_goal_active_blocks_staged_summary_notification(tmp_path):
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    paths = FakePaths(tmp_path)
+    cwd = "/workspace/demo"
+    transcript = tmp_path / "session.jsonl"
+    write_goal_transcript(transcript, ["active"])
+    notify.stage_summary(
+        paths,
+        cwd=cwd,
+        summary_markdown="agent incorrectly staged summary",
+        now=now,
+        session_id="thread_123",
+    )
+    notify.mark_prompt(
+        paths,
+        cwd=cwd,
+        now=now,
+        hook_stdin=json.dumps({"cwd": cwd, "session_id": "thread_123"}),
+    )
+    lark = FakeLark()
+
+    result = notify.send_completion_from_summary(
+        paths,
+        lark,
+        cwd=cwd,
+        now=now,
+        hook_stdin=hook_stdin_for_session(transcript, session_id="thread_123", cwd=cwd),
+    )
+
+    assert result.status == "skipped"
+    assert result.detail == "goal_active"
+    assert lark.calls == []
+
+
 def test_completion_skips_missing_summary_when_goal_status_is_unknown(tmp_path):
     now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
     paths = FakePaths(tmp_path)
@@ -382,6 +490,34 @@ def test_completion_skips_missing_summary_when_goal_status_is_unknown(tmp_path):
     assert result.detail == "summary_missing_goal_unknown"
     assert lark.calls == []
     assert StateStore(paths.runtime_state_path).get_prompt_marker("/workspace/demo") is None
+
+
+def test_completion_skip_reason_is_recorded_as_diagnostic_event(tmp_path):
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    paths = FakePaths(tmp_path)
+    cwd = "/workspace/demo"
+    lark = FakeLark()
+
+    result = notify.send_completion_from_summary(
+        paths,
+        lark,
+        cwd=cwd,
+        now=now,
+        hook_stdin=json.dumps({"cwd": cwd, "session_id": "thread_secret"}),
+    )
+
+    assert result.status == "skipped"
+    events = StateStore(paths.runtime_state_path).list_diagnostic_events(
+        "completion_notification_decision"
+    )
+    assert events
+    detail = json.loads(events[-1]["detail_json"])
+    assert detail["decision"] == "skipped"
+    assert detail["reason"] == "summary_missing"
+    assert detail["route_kind"] == "session"
+    assert detail["session_id_present"] is True
+    assert detail["route_key_hash"]
+    assert "thread_secret" not in events[-1]["detail_json"]
 
 
 def test_completion_skips_non_user_workspace_even_with_summary_and_marker(tmp_path):
@@ -565,6 +701,100 @@ def test_deadline_passed_closes_and_sends_timeout_card(tmp_path):
     assert store.get_away_session(session_id)["close_reason"] == "stale_timeout"
     assert store.get_window(window_id)["close_reason"] == "stale_timeout"
     assert store.get_runtime_lock(f"away-waiter:{session_id}") is None
+
+
+def test_deadline_passed_with_fresh_summary_closes_stale_session_and_allows_completion(tmp_path):
+    now = datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc)
+    paths = FakePaths(tmp_path)
+    store = StateStore(paths.runtime_state_path)
+    session_id = store.create_away_session(
+        project="Demo",
+        cwd="/workspace/demo",
+        task="Task",
+        started_at="2026-06-20T08:00:00Z",
+        deadline_at="2026-06-20T09:00:00Z",
+    )
+    window_id = store.create_away_window(
+        session_id=session_id,
+        recipient_id="oc_chat",
+        card_message_id="om_card",
+        created_at="2026-06-20T08:00:00Z",
+        deadline_at="2026-06-20T09:00:00Z",
+    )
+    notify.stage_summary(paths, cwd="/workspace/demo", summary_markdown="summary", now=now)
+    lark = FakeLark()
+
+    result = notify.send_away_early_exit_if_needed(
+        paths,
+        lark,
+        cwd="/workspace/demo",
+        now=now,
+        hook_stdin=None,
+    )
+
+    assert result is None
+    assert lark.calls == []
+    assert store.get_away_session(session_id)["close_reason"] == "stale_timeout"
+    assert store.get_window(window_id)["close_reason"] == "stale_timeout"
+    assert store.get_staged_summary("/workspace/demo") is not None
+
+
+def test_deadline_passed_uses_session_summary_route_before_timeout_card(tmp_path):
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    paths = FakePaths(tmp_path)
+    store = StateStore(paths.runtime_state_path)
+    session_id = store.create_away_session(
+        project="Demo",
+        cwd="/workspace/root",
+        task="Task",
+        started_at="2026-06-24T08:00:00Z",
+        deadline_at="2026-06-24T09:00:00Z",
+        codex_session_id="thread_123",
+    )
+    window_id = store.create_away_window(
+        session_id=session_id,
+        recipient_id="oc_chat",
+        card_message_id="om_card",
+        created_at="2026-06-24T08:00:00Z",
+        deadline_at="2026-06-24T09:00:00Z",
+    )
+    notify.stage_summary(
+        paths,
+        cwd="/workspace/root/worktrees/feature-a",
+        summary_markdown="summary",
+        now=now,
+        session_id="thread_123",
+    )
+    lark = FakeLark()
+    hook_stdin = hook_stdin_for_session(
+        tmp_path / "transcript.jsonl",
+        session_id="thread_123",
+        cwd="/workspace/root",
+    )
+
+    result = notify.send_away_early_exit_if_needed(
+        paths,
+        lark,
+        cwd="/workspace/root",
+        now=now,
+        hook_stdin=hook_stdin,
+    )
+
+    assert result is None
+    assert lark.calls == []
+    assert store.get_away_session(session_id)["close_reason"] == "stale_timeout"
+    assert store.get_window(window_id)["close_reason"] == "stale_timeout"
+
+    result = notify.send_completion_from_summary(
+        paths,
+        lark,
+        cwd="/workspace/root",
+        now=now,
+        hook_stdin=hook_stdin,
+    )
+
+    assert result.status == "summary_sent"
+    assert lark.calls == [("summary", "summary")]
 
 
 def test_stop_hook_deadline_candidate_returns_without_closing_fresh_session(tmp_path):

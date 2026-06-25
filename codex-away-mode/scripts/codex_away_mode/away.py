@@ -154,7 +154,6 @@ class AwayWaiter:
         )
         if token_error is not None:
             return token_error
-        self.store.clear_resume_token(session_id)
         window = self.store.get_window(str(session.get("active_window_id") or ""))
         if not window:
             return {
@@ -215,6 +214,7 @@ class AwayWaiter:
             card_kind="progress",
             sent_at=sent_at,
         )
+        self.store.clear_resume_token(session_id)
         window = self.store.get_window(window["window_id"]) or window
         session = self.store.get_away_session(session_id) or session
         return self._poll_until_result(

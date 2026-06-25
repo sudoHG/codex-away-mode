@@ -17,6 +17,7 @@ from .state import StateStore
 
 DEFAULT_SUMMARY_MAX_AGE_SECONDS = 300
 DEFAULT_PROMPT_MARKER_MAX_AGE_SECONDS = 300
+DEFAULT_COMPLETION_MARKER_MAX_AGE_SECONDS = 24 * 60 * 60
 _SAFE_CAPTURE_VALUE_KEYS = {
     "approval_policy",
     "cwd",
@@ -64,13 +65,35 @@ def _runtime_store(paths) -> StateStore:
     return StateStore(Path(paths.runtime_state_path))
 
 
-def mark_prompt(paths, cwd: str, now: datetime) -> str:
+def mark_prompt(
+    paths,
+    cwd: str,
+    now: datetime,
+    hook_stdin: str | bytes | None = None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+) -> str:
     store = _runtime_store(paths)
-    return store.mark_prompt_marker(
+    route = resolve_completion_route(
+        cwd=cwd,
+        hook_stdin=hook_stdin,
+        explicit_session_id=session_id,
+        explicit_turn_id=turn_id,
+    )
+    expires_at = (
+        _to_utc(now) + timedelta(seconds=DEFAULT_COMPLETION_MARKER_MAX_AGE_SECONDS)
+    ).isoformat()
+    route_key = store.mark_completion_prompt(
+        route=route,
+        marked_at=_to_utc(now).isoformat(),
+        expires_at=expires_at,
+    )
+    store.mark_prompt_marker(
         cwd=cwd,
         marked_at=_to_utc(now).isoformat(),
-        expires_at=(_to_utc(now) + timedelta(seconds=DEFAULT_PROMPT_MARKER_MAX_AGE_SECONDS)).isoformat(),
+        expires_at=expires_at,
     )
+    return route_key
 
 
 def stage_summary(
@@ -80,14 +103,30 @@ def stage_summary(
     summary_markdown: str,
     now: datetime,
     max_age_seconds: int = DEFAULT_SUMMARY_MAX_AGE_SECONDS,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> str:
     store = _runtime_store(paths)
-    return store.stage_summary(
+    route = resolve_completion_route(
+        cwd=cwd,
+        explicit_session_id=session_id,
+        explicit_turn_id=turn_id,
+        env=env,
+    )
+    route_key = store.stage_completion_summary(
+        route=route,
+        summary_markdown=summary_markdown,
+        staged_at=_to_utc(now).isoformat(),
+        expires_at=(_to_utc(now) + timedelta(seconds=max_age_seconds)).isoformat(),
+    )
+    store.stage_summary(
         cwd=cwd,
         summary_markdown=summary_markdown,
         staged_at=_to_utc(now).isoformat(),
         expires_at=(_to_utc(now) + timedelta(seconds=max_age_seconds)).isoformat(),
     )
+    return route_key
 
 
 def send_permission_request(
@@ -214,6 +253,41 @@ def record_hook_invocation(
         return None
 
 
+def _record_completion_decision(
+    store: StateStore,
+    *,
+    decision: str,
+    reason: str | None,
+    route,
+    cwd: str | None,
+    goal_status: str,
+    summary_present: bool,
+    marker_present: bool,
+    now: datetime,
+) -> None:
+    try:
+        store.record_diagnostic_event(
+            event_kind="completion_notification_decision",
+            severity="info" if decision != "skipped" else "warning",
+            message="Completion notification decision.",
+            detail={
+                "decision": decision,
+                "reason": reason,
+                "route_key_hash": route.route_key_hash,
+                "route_kind": route.route_kind,
+                "cwd_hash": route.cwd_hash or (StateStore.cwd_hash(cwd) if cwd else None),
+                "session_id_present": route.session_id_hash is not None,
+                "turn_id_present": route.turn_id_hash is not None,
+                "goal_status": goal_status,
+                "summary_present": summary_present,
+                "marker_present": marker_present,
+            },
+            created_at=_to_utc(now).isoformat(),
+        )
+    except Exception:
+        return
+
+
 def resolve_notify_cwd(
     explicit_cwd: str | None,
     hook_stdin: str | bytes | None,
@@ -227,6 +301,32 @@ def resolve_notify_cwd(
     return process_cwd or os.getcwd()
 
 
+def resolve_completion_route(
+    *,
+    cwd: str | None,
+    hook_stdin: str | bytes | None = None,
+    explicit_session_id: str | None = None,
+    explicit_turn_id: str | None = None,
+    env: dict[str, str] | None = None,
+):
+    env_map = env if env is not None else {}
+    session_id = (
+        _extract_stdin_string_field(hook_stdin, "session_id")
+        or _extract_stdin_string_field(hook_stdin, "thread_id")
+        or _optional_string(explicit_session_id)
+        or _optional_string(env_map.get("CODEX_THREAD_ID"))
+    )
+    turn_id = (
+        _extract_stdin_string_field(hook_stdin, "turn_id")
+        or _optional_string(explicit_turn_id)
+    )
+    return StateStore.build_completion_route(
+        cwd=cwd,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+
+
 def send_completion_from_summary(
     paths,
     lark,
@@ -234,43 +334,173 @@ def send_completion_from_summary(
     now: datetime,
     hook_stdin: str | bytes | None = None,
     max_age_seconds: int = DEFAULT_SUMMARY_MAX_AGE_SECONDS,
-    prompt_marker_max_age_seconds: int = DEFAULT_PROMPT_MARKER_MAX_AGE_SECONDS,
+    prompt_marker_max_age_seconds: int = DEFAULT_COMPLETION_MARKER_MAX_AGE_SECONDS,
 ) -> NotifyResult:
+    store = _runtime_store(paths)
+    route = resolve_completion_route(cwd=cwd, hook_stdin=hook_stdin)
+    goal_status = goal_status_from_hook_stdin(hook_stdin)
     skip_reason = skip_cwd_reason(paths, cwd)
     if skip_reason:
         try:
-            _runtime_store(paths).delete_prompt_marker(cwd)
+            store.delete_completion_prompt_marker(route)
+            store.delete_prompt_marker(cwd)
         except Exception:
             pass
+        _record_completion_decision(
+            store,
+            decision="skipped",
+            reason=skip_reason,
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=False,
+            marker_present=False,
+            now=now,
+        )
         return NotifyResult("skipped", skip_reason)
 
-    store = _runtime_store(paths)
-    summary = store.get_staged_summary(cwd)
+    summary = store.get_completion_summary(route)
+    legacy_summary = None if summary else store.get_staged_summary(cwd)
+    active_summary = summary or legacy_summary
+    marker = store.get_completion_prompt_marker(route)
+    legacy_marker = None if marker else store.get_prompt_marker(cwd)
+    active_marker = marker or legacy_marker
+
+    if goal_status == "active":
+        store.delete_completion_summary(route)
+        if active_summary:
+            store.delete_staged_summary_by_hash(active_summary.get("cwd_hash"))
+        _record_completion_decision(
+            store,
+            decision="skipped",
+            reason="goal_active",
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=active_summary is not None,
+            marker_present=active_marker is not None,
+            now=now,
+        )
+        return NotifyResult("skipped", "goal_active")
+
+    summary = active_summary
     if summary and _runtime_record_is_fresh(summary, "staged_at", max_age_seconds, now):
         lark.send_summary_card(summary["summary_markdown"], cwd=cwd)
-        store.delete_staged_summary(cwd)
-        store.delete_prompt_marker(cwd)
+        store.delete_completion_summary(route)
+        store.delete_completion_prompt_marker(route)
+        store.delete_staged_summary_by_hash(summary.get("cwd_hash"))
+        if active_marker:
+            store.delete_prompt_marker_by_hash(active_marker.get("cwd_hash"))
+        _record_completion_decision(
+            store,
+            decision="summary_sent",
+            reason=None,
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=True,
+            marker_present=active_marker is not None,
+            now=now,
+        )
         return NotifyResult("summary_sent")
     if summary:
-        store.delete_staged_summary(cwd)
+        store.delete_completion_summary(route)
+        store.delete_staged_summary_by_hash(summary.get("cwd_hash"))
+        _record_completion_decision(
+            store,
+            decision="skipped",
+            reason="summary_stale",
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=True,
+            marker_present=active_marker is not None,
+            now=now,
+        )
 
-    marker = store.get_prompt_marker(cwd)
+    marker = active_marker
     if marker is None:
+        _record_completion_decision(
+            store,
+            decision="skipped",
+            reason="summary_missing",
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=False,
+            marker_present=False,
+            now=now,
+        )
         return NotifyResult("skipped", "summary_missing")
     if not _runtime_record_is_fresh(marker, "marked_at", prompt_marker_max_age_seconds, now):
-        store.delete_prompt_marker(cwd)
+        store.delete_completion_prompt_marker(route)
+        store.delete_prompt_marker_by_hash(marker.get("cwd_hash"))
+        _record_completion_decision(
+            store,
+            decision="skipped",
+            reason="prompt_marker_stale",
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=False,
+            marker_present=True,
+            now=now,
+        )
         return NotifyResult("skipped", "prompt_marker_stale")
 
-    goal_status = goal_status_from_hook_stdin(hook_stdin)
-    if goal_status == "active":
-        return NotifyResult("skipped", "goal_active")
     if goal_status == "unknown":
-        store.delete_prompt_marker(cwd)
+        store.delete_completion_prompt_marker(route)
+        store.delete_prompt_marker_by_hash(marker.get("cwd_hash"))
+        _record_completion_decision(
+            store,
+            decision="skipped",
+            reason="summary_missing_goal_unknown",
+            route=route,
+            cwd=cwd,
+            goal_status=goal_status,
+            summary_present=False,
+            marker_present=True,
+            now=now,
+        )
         return NotifyResult("skipped", "summary_missing_goal_unknown")
 
     lark.send_fallback_card(cwd)
-    store.delete_prompt_marker(cwd)
+    store.delete_completion_prompt_marker(route)
+    store.delete_prompt_marker_by_hash(marker.get("cwd_hash"))
+    _record_completion_decision(
+        store,
+        decision="fallback_sent",
+        reason="summary_missing",
+        route=route,
+        cwd=cwd,
+        goal_status=goal_status,
+        summary_present=False,
+        marker_present=True,
+        now=now,
+    )
     return NotifyResult("fallback_sent", "summary_missing")
+
+
+def _fresh_completion_summary_for_stop(
+    store: StateStore,
+    *,
+    cwd: str,
+    hook_stdin: str | bytes | None,
+    now: datetime,
+) -> dict | None:
+    route = resolve_completion_route(cwd=cwd, hook_stdin=hook_stdin)
+    summary = store.get_completion_summary(route)
+    if summary and _runtime_record_is_fresh(summary, "staged_at", DEFAULT_SUMMARY_MAX_AGE_SECONDS, now):
+        return summary
+    legacy_summary = store.get_staged_summary(cwd)
+    if legacy_summary and _runtime_record_is_fresh(
+        legacy_summary,
+        "staged_at",
+        DEFAULT_SUMMARY_MAX_AGE_SECONDS,
+        now,
+    ):
+        return legacy_summary
+    return None
 
 
 def send_away_early_exit_if_needed(
@@ -316,6 +546,33 @@ def send_away_early_exit_if_needed(
             return NotifyResult("away_active_stop_ignored", "waiter_alive")
 
         if deadline and deadline <= _to_utc(now):
+            summary = _fresh_completion_summary_for_stop(
+                store,
+                cwd=cwd,
+                hook_stdin=hook_stdin,
+                now=now,
+            )
+            if summary:
+                _close_away_for_stop(
+                    store,
+                    session=session,
+                    window=window,
+                    reason="stale_timeout",
+                    status="timed_out",
+                    closed_at=now,
+                )
+                store.record_diagnostic_event(
+                    event_kind="away_deadline_closed_completion_allowed",
+                    severity="warning",
+                    message="Stop hook closed a stale Away Session and allowed completion notification to continue.",
+                    detail={
+                        "session_id": session.get("session_id"),
+                        "window_id": window.get("window_id"),
+                        "reason": "stale_timeout",
+                    },
+                    created_at=_to_utc(now).isoformat(),
+                )
+                return None
             if hasattr(lark, "send_away_timeout_card"):
                 lark.send_away_timeout_card(
                     {

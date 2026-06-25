@@ -6,6 +6,8 @@ import shutil
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from codex_away_mode.away import AwayWaiter
 from codex_away_mode.config import AppConfig, load_config, save_config
 from codex_away_mode.lark import LarkMessage, SendResult
@@ -169,7 +171,7 @@ def test_initial_away_card_title_uses_programmatic_context_not_project_arg(tmp_p
     result = waiter.wait(
         _context(
             project="Agent 传错的项目名",
-            cwd="/Users/hutong/Codex项目/Skill-Create",
+            cwd="/Users/example/Codex/Skill-Create",
             codex_session_id="thread_1",
         )
     )
@@ -199,7 +201,7 @@ def test_timeout_away_card_title_uses_programmatic_context(tmp_path, monkeypatch
     result = waiter.wait(
         _context(
             project="Agent 传错的项目名",
-            cwd="/Users/hutong/Codex项目/Skill-Create",
+            cwd="/Users/example/Codex/Skill-Create",
             codex_session_id="thread_1",
             wait_minutes=2,
         )
@@ -288,6 +290,42 @@ def test_resume_sends_progress_card_reuses_window_and_delivers_next_reply(tmp_pa
     with sqlite3.connect(store.path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM away_windows").fetchone()[0] == 1
     assert store.get_window(first["window_id"])["card_message_id"] == "om_card_2"
+
+
+def test_resume_token_survives_progress_card_send_failure_for_retry(tmp_path):
+    first_lark = FakeLark([[_message("om_reply_1", "第一条")]])
+    waiter, store = _waiter(tmp_path, lark=first_lark)
+    first = waiter.wait(_context())
+    original_token_hash = store.get_resume_token_hash(first["away_session_id"])
+
+    class FailingProgressCardLark(FakeLark):
+        def send_interactive_card(self, *, card, user_id=None, chat_id=None):
+            raise RuntimeError("HTTP 429")
+
+    failing_waiter = AwayWaiter(
+        lark=FailingProgressCardLark([[]], next_card_index=2),
+        store=store,
+        clock=FakeClock(),
+        config=_config(),
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        failing_waiter.wait(_resume_context(first))
+
+    assert store.get_resume_token_hash(first["away_session_id"]) == original_token_hash
+
+    second_reply = _message("om_reply_2", "重试后继续", reply_to="om_card_2")
+    retry_waiter = AwayWaiter(
+        lark=FakeLark([[second_reply]], next_card_index=2),
+        store=store,
+        clock=FakeClock(),
+        config=_config(),
+    )
+
+    result = retry_waiter.wait(_resume_context(first))
+
+    assert result["status"] == "reply"
+    assert result["reply_text"] == "重试后继续"
 
 
 def test_resume_requires_resume_token(tmp_path):

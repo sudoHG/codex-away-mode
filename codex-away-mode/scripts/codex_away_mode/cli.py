@@ -69,6 +69,7 @@ def build_parser():
     notify_mark_prompt.add_argument("--json", action="store_true")
     notify_stage_summary = notify_subparsers.add_parser("stage-summary")
     notify_stage_summary.add_argument("--cwd")
+    notify_stage_summary.add_argument("--session-id")
     notify_stage_summary.add_argument("--json", action="store_true")
     notify_stop = notify_subparsers.add_parser("stop")
     notify_stop.add_argument("--cwd")
@@ -140,6 +141,7 @@ def build_parser():
     away_status_parser.add_argument("--limit", type=int, default=20)
     away_status_parser.add_argument("--json", action="store_true")
     away_cleanup = away_subparsers.add_parser("cleanup")
+    away_cleanup.add_argument("--orphan-active", action="store_true")
     away_cleanup.add_argument("--dry-run", action="store_true")
     away_cleanup.add_argument("--json", action="store_true")
 
@@ -265,6 +267,7 @@ def _main(argv, *, stdin=None):
         result = StateStore(paths.runtime_state_path).cleanup_stale_away_sessions(
             now=SystemClock().now().isoformat(),
             dry_run=args.dry_run,
+            include_orphan_active=args.orphan_active,
         )
         emit_json(
             {
@@ -324,10 +327,20 @@ def _handle_notify(args, paths, *, stdin=None):
             emit_json({"ok": True, "command": "notify mark-prompt", "status": "skipped", "reason": skip_reason, "cwd": cwd})
             return 0
         try:
-            marker_key = notify.mark_prompt(paths, cwd=cwd, now=now)
+            marker_key = notify.mark_prompt(paths, cwd=cwd, now=now, hook_stdin=hook_stdin)
         except RuntimeStateError as exc:
             return _emit_runtime_state_error("notify mark-prompt", exc)
-        emit_json({"ok": True, "command": "notify mark-prompt", "status": "marked", "marker_key": marker_key})
+        route = notify.resolve_completion_route(cwd=cwd, hook_stdin=hook_stdin)
+        emit_json(
+            {
+                "ok": True,
+                "command": "notify mark-prompt",
+                "status": "marked",
+                "marker_key": marker_key,
+                "route_kind": route.route_kind,
+                "route_key_hash": route.route_key_hash,
+            }
+        )
         return 0
 
     if args.notify_command == "stage-summary":
@@ -340,10 +353,32 @@ def _handle_notify(args, paths, *, stdin=None):
             return 0
         summary = hook_stdin or ""
         try:
-            summary_key = notify.stage_summary(paths, cwd=cwd, summary_markdown=summary, now=now)
+            summary_key = notify.stage_summary(
+                paths,
+                cwd=cwd,
+                summary_markdown=summary,
+                now=now,
+                session_id=args.session_id,
+                env=os.environ,
+            )
         except RuntimeStateError as exc:
             return _emit_runtime_state_error("notify stage-summary", exc)
-        emit_json({"ok": True, "command": "notify stage-summary", "status": "staged", "summary_key": summary_key, "cwd": cwd})
+        route = notify.resolve_completion_route(
+            cwd=cwd,
+            explicit_session_id=args.session_id,
+            env=os.environ,
+        )
+        emit_json(
+            {
+                "ok": True,
+                "command": "notify stage-summary",
+                "status": "staged",
+                "summary_key": summary_key,
+                "cwd": cwd,
+                "route_kind": route.route_kind,
+                "route_key_hash": route.route_key_hash,
+            }
+        )
         return 0
 
     if args.command == "notify" and args.notify_command == "stop":

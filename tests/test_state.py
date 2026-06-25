@@ -31,6 +31,10 @@ def test_state_store_enables_wal_busy_timeout_and_required_tables(tmp_path):
         "diagnostic_events",
         "away_cards",
         "away_resume_tokens",
+        "prompt_markers",
+        "staged_summaries",
+        "completion_summaries",
+        "completion_prompt_markers",
     } <= tables
 
     with sqlite3.connect(tmp_path / "state.sqlite") as conn:
@@ -181,6 +185,63 @@ def test_ordinary_dm_event_sends_hint_for_each_distinct_message(tmp_path):
         {"message_id": "om_dm_3", "action": "ordinary_dm_hint"},
     ]
     assert hint_count == 3
+
+
+def test_completion_summary_routes_by_session_not_cwd(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite")
+    stage_route = store.completion_route(
+        cwd="/repo/worktrees/playback-fix",
+        session_id="thread_123",
+        turn_id="turn_stage",
+    )
+    stop_route = store.completion_route(
+        cwd="/repo",
+        session_id="thread_123",
+        turn_id="turn_stop",
+    )
+
+    assert stage_route.route_kind == "session"
+    assert stage_route.route_key_hash == stop_route.route_key_hash
+    assert stage_route.cwd_hash != stop_route.cwd_hash
+
+    store.stage_completion_summary(
+        route=stage_route,
+        summary_markdown="summary from worktree",
+        staged_at="2026-06-24T10:00:00+00:00",
+        expires_at="2026-06-24T10:05:00+00:00",
+    )
+
+    summary = store.get_completion_summary(stop_route)
+
+    assert summary is not None
+    assert summary["summary_markdown"] == "summary from worktree"
+    assert summary["route_kind"] == "session"
+
+
+def test_completion_marker_routes_by_session_not_cwd(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite")
+    prompt_route = store.completion_route(
+        cwd="/repo",
+        session_id="thread_123",
+        turn_id="turn_prompt",
+    )
+    stop_route = store.completion_route(
+        cwd="/repo/worktrees/playback-fix",
+        session_id="thread_123",
+        turn_id="turn_stop",
+    )
+
+    store.mark_completion_prompt(
+        route=prompt_route,
+        marked_at="2026-06-24T08:00:00+00:00",
+        expires_at="2026-06-25T08:00:00+00:00",
+    )
+
+    marker = store.get_completion_prompt_marker(stop_route)
+
+    assert marker is not None
+    assert marker["route_key_hash"] == prompt_route.route_key_hash
+    assert marker["route_kind"] == "session"
 
 
 def test_resume_token_hash_round_trip_and_clear(tmp_path):
@@ -699,6 +760,56 @@ def test_cleanup_skips_future_deadline_and_live_waiter(tmp_path):
     assert store.get_runtime_lock("away-window:oc_future_chat") is not None
     assert store.get_runtime_lock("away-window:oc_live_chat") is not None
     assert store.get_runtime_lock(f"away-waiter:{live_session_id}") is not None
+
+
+def test_cleanup_orphan_active_closes_future_deadline_when_waiter_lease_expired(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite")
+    session_id = store.create_away_session(
+        project="Future orphan",
+        cwd="/workspace/future-orphan",
+        task="wait",
+        started_at="2026-06-18T09:00:00Z",
+        deadline_at="2026-06-18T11:00:00Z",
+    )
+    window_id = store.create_away_window_guarded(
+        recipient_id="oc_future_orphan_chat",
+        session_id=session_id,
+        card_message_id="om_future_orphan_card",
+        created_at="2026-06-18T09:00:00Z",
+        deadline_at="2026-06-18T11:00:00Z",
+        owner=session_id,
+        lock_expires_at="2026-06-18T11:00:00Z",
+        now="2026-06-18T09:00:00Z",
+    )
+    assert window_id is not None
+    assert store.renew_waiter_lease(
+        session_id,
+        owner="waiter",
+        now="2026-06-18T09:00:00Z",
+        expires_at="2026-06-18T09:01:00Z",
+    )
+
+    result = store.cleanup_stale_away_sessions(
+        now="2026-06-18T10:00:00+00:00",
+        dry_run=False,
+        include_orphan_active=True,
+    )
+
+    assert result["closed_count"] == 1
+    assert result["closed"] == [
+        {
+            "session_id": session_id,
+            "cwd": "/workspace/future-orphan",
+            "deadline_at": "2026-06-18T11:00:00Z",
+            "close_reason": "manual_cleanup_orphan_active",
+        }
+    ]
+    assert store.get_away_session(session_id)["status"] == "closed"
+    assert store.get_away_session(session_id)["close_reason"] == "manual_cleanup_orphan_active"
+    assert store.get_window(window_id)["status"] == "closed"
+    assert store.get_window(window_id)["close_reason"] == "manual_cleanup_orphan_active"
+    assert store.get_runtime_lock("away-window:oc_future_orphan_chat") is None
+    assert store.get_runtime_lock(f"away-waiter:{session_id}") is None
 
 
 def test_prompt_marker_is_keyed_by_cwd_hash(tmp_path):

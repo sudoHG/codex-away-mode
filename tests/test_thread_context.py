@@ -27,7 +27,7 @@ def test_resolve_title_context_uses_hook_session_id_before_env(tmp_path, monkeyp
     monkeypatch.setenv("CODEX_THREAD_ID", "env_thread")
 
     context = resolve_card_title_context(
-        cwd="/Users/hutong/Codex项目/Skill-Create",
+        cwd="/Users/example/Codex/Skill-Create",
         hook_stdin=json.dumps({"session_id": "hook_thread"}),
     )
 
@@ -50,16 +50,16 @@ def test_resolve_title_context_falls_back_to_thread_id_env_then_explicit(tmp_pat
     monkeypatch.setenv("CODEX_THREAD_ID", "thread_from_env")
 
     hook_context = resolve_card_title_context(
-        cwd="/Users/hutong/Codex项目/Skill-Create",
+        cwd="/Users/example/Codex/Skill-Create",
         hook_stdin=json.dumps({"thread_id": "thread_from_payload"}),
         explicit_codex_session_id="thread_from_arg",
     )
     env_context = resolve_card_title_context(
-        cwd="/Users/hutong/Codex项目/Skill-Create",
+        cwd="/Users/example/Codex/Skill-Create",
         explicit_codex_session_id="thread_from_arg",
     )
     explicit_context = resolve_card_title_context(
-        cwd="/Users/hutong/Codex项目/Skill-Create",
+        cwd="/Users/example/Codex/Skill-Create",
         env={"CODEX_HOME": str(codex_home)},
         explicit_codex_session_id="thread_from_arg",
     )
@@ -81,7 +81,7 @@ def test_resolve_title_context_does_not_guess_thread_from_cwd_recency(tmp_path, 
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
 
-    context = resolve_card_title_context(cwd="/Users/hutong/Codex项目/Skill-Create")
+    context = resolve_card_title_context(cwd="/Users/example/Codex/Skill-Create")
 
     assert context.project_name == "Skill-Create"
     assert context.thread_id is None
@@ -105,7 +105,7 @@ def test_session_index_last_matching_record_wins_and_bad_json_is_ignored(tmp_pat
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     context = resolve_card_title_context(
-        cwd="/Users/hutong/Codex项目/Skill-Create",
+        cwd="/Users/example/Codex/Skill-Create",
         hook_stdin=json.dumps({"session_id": "thread_1"}),
     )
 

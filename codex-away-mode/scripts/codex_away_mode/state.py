@@ -4,12 +4,22 @@ import sqlite3
 import uuid
 import json
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 INSTALL_STATE_KEYS = ("status", "route_key", "e2e_notify")
+
+
+@dataclass(frozen=True)
+class CompletionRoute:
+    route_kind: str
+    route_key_hash: str
+    session_id_hash: str | None = None
+    turn_id_hash: str | None = None
+    cwd_hash: str | None = None
 
 
 def open_install_store(paths) -> "StateStore":
@@ -226,6 +236,27 @@ class StateStore:
                     cwd_hash TEXT PRIMARY KEY,
                     summary_markdown TEXT NOT NULL,
                     staged_at TEXT NOT NULL,
+                    expires_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS completion_summaries (
+                    route_key_hash TEXT PRIMARY KEY,
+                    route_kind TEXT NOT NULL,
+                    session_id_hash TEXT,
+                    turn_id_hash TEXT,
+                    cwd_hash TEXT,
+                    summary_markdown TEXT NOT NULL,
+                    staged_at TEXT NOT NULL,
+                    expires_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS completion_prompt_markers (
+                    route_key_hash TEXT PRIMARY KEY,
+                    route_kind TEXT NOT NULL,
+                    session_id_hash TEXT,
+                    turn_id_hash TEXT,
+                    cwd_hash TEXT,
+                    marked_at TEXT NOT NULL,
                     expires_at TEXT
                 );
 
@@ -894,10 +925,15 @@ class StateStore:
             conn.execute("COMMIT")
         return sessions
 
-    def cleanup_stale_away_sessions(self, *, now: str, dry_run: bool = False) -> dict[str, Any]:
+    def cleanup_stale_away_sessions(
+        self,
+        *,
+        now: str,
+        dry_run: bool = False,
+        include_orphan_active: bool = False,
+    ) -> dict[str, Any]:
         now_dt = _parse_datetime(now)
         now_iso = now_dt.isoformat()
-        reason = "manual_cleanup_timeout"
         closed: list[dict[str, Any]] = []
         skipped_waiter_alive: list[str] = []
 
@@ -921,7 +957,13 @@ class StateStore:
                 except (TypeError, ValueError):
                     continue
                 if deadline > now_dt:
-                    continue
+                    if not include_orphan_active:
+                        continue
+                    reason = "manual_cleanup_orphan_active"
+                    target_status = "closed"
+                else:
+                    reason = "manual_cleanup_timeout"
+                    target_status = "timed_out"
 
                 session_id = str(session["session_id"])
                 lease = conn.execute(
@@ -960,24 +1002,24 @@ class StateStore:
                 conn.execute(
                     """
                     UPDATE away_sessions
-                    SET status = 'timed_out',
+                    SET status = ?,
                         close_reason = ?,
                         closed_at = ?,
                         updated_at = ?
                     WHERE session_id = ?
                     """,
-                    (reason, now_iso, now_iso, session_id),
+                    (target_status, reason, now_iso, now_iso, session_id),
                 )
                 conn.execute(
                     """
                     UPDATE away_windows
-                    SET status = 'timed_out',
+                    SET status = ?,
                         close_reason = ?,
                         closed_at = ?
                     WHERE session_id = ?
                       AND status IN ('active', 'waiting', 'waiting_paused')
                     """,
-                    (reason, now_iso, session_id),
+                    (target_status, reason, now_iso, session_id),
                 )
                 conn.execute(
                     """
@@ -1564,6 +1606,15 @@ class StateStore:
                 (self.cwd_hash(cwd),),
             )
 
+    def delete_prompt_marker_by_hash(self, cwd_hash: str | None) -> None:
+        if not cwd_hash:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM prompt_markers WHERE cwd_hash = ?",
+                (cwd_hash,),
+            )
+
     def stage_summary(
         self,
         *,
@@ -1606,6 +1657,172 @@ class StateStore:
             conn.execute(
                 "DELETE FROM staged_summaries WHERE cwd_hash = ?",
                 (self.cwd_hash(cwd),),
+            )
+
+    def delete_staged_summary_by_hash(self, cwd_hash: str | None) -> None:
+        if not cwd_hash:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM staged_summaries WHERE cwd_hash = ?",
+                (cwd_hash,),
+            )
+
+    def completion_route(
+        self,
+        *,
+        cwd: str | None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> CompletionRoute:
+        return self.build_completion_route(
+            cwd=cwd,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+
+    @classmethod
+    def build_completion_route(
+        cls,
+        *,
+        cwd: str | None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> CompletionRoute:
+        clean_session_id = str(session_id or "").strip() or None
+        clean_turn_id = str(turn_id or "").strip() or None
+        cwd_hash = cls.cwd_hash(cwd) if cwd else None
+        if clean_session_id:
+            route_key = f"session:{clean_session_id}"
+            return CompletionRoute(
+                route_kind="session",
+                route_key_hash=cls.hash_sensitive(route_key),
+                session_id_hash=cls.hash_sensitive(clean_session_id),
+                turn_id_hash=cls.hash_sensitive(clean_turn_id),
+                cwd_hash=cwd_hash,
+            )
+        return CompletionRoute(
+            route_kind="cwd",
+            route_key_hash=cwd_hash or cls.hash_sensitive("cwd:none"),
+            session_id_hash=None,
+            turn_id_hash=cls.hash_sensitive(clean_turn_id),
+            cwd_hash=cwd_hash,
+        )
+
+    def stage_completion_summary(
+        self,
+        *,
+        route: CompletionRoute,
+        summary_markdown: str,
+        staged_at: str,
+        expires_at: str | None = None,
+    ) -> str:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO completion_summaries (
+                    route_key_hash, route_kind, session_id_hash, turn_id_hash,
+                    cwd_hash, summary_markdown, staged_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(route_key_hash) DO UPDATE SET
+                    route_kind = excluded.route_kind,
+                    session_id_hash = excluded.session_id_hash,
+                    turn_id_hash = excluded.turn_id_hash,
+                    cwd_hash = excluded.cwd_hash,
+                    summary_markdown = excluded.summary_markdown,
+                    staged_at = excluded.staged_at,
+                    expires_at = excluded.expires_at
+                """,
+                (
+                    route.route_key_hash,
+                    route.route_kind,
+                    route.session_id_hash,
+                    route.turn_id_hash,
+                    route.cwd_hash,
+                    summary_markdown,
+                    staged_at,
+                    expires_at,
+                ),
+            )
+        return route.route_key_hash
+
+    def get_completion_summary(self, route: CompletionRoute) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT route_key_hash, route_kind, session_id_hash, turn_id_hash,
+                       cwd_hash, summary_markdown, staged_at, expires_at
+                FROM completion_summaries
+                WHERE route_key_hash = ?
+                """,
+                (route.route_key_hash,),
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def delete_completion_summary(self, route: CompletionRoute) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM completion_summaries WHERE route_key_hash = ?",
+                (route.route_key_hash,),
+            )
+
+    def mark_completion_prompt(
+        self,
+        *,
+        route: CompletionRoute,
+        marked_at: str,
+        expires_at: str | None = None,
+    ) -> str:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO completion_prompt_markers (
+                    route_key_hash, route_kind, session_id_hash, turn_id_hash,
+                    cwd_hash, marked_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(route_key_hash) DO UPDATE SET
+                    route_kind = excluded.route_kind,
+                    session_id_hash = excluded.session_id_hash,
+                    turn_id_hash = excluded.turn_id_hash,
+                    cwd_hash = excluded.cwd_hash,
+                    marked_at = excluded.marked_at,
+                    expires_at = excluded.expires_at
+                """,
+                (
+                    route.route_key_hash,
+                    route.route_kind,
+                    route.session_id_hash,
+                    route.turn_id_hash,
+                    route.cwd_hash,
+                    marked_at,
+                    expires_at,
+                ),
+            )
+        return route.route_key_hash
+
+    def get_completion_prompt_marker(
+        self,
+        route: CompletionRoute,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT route_key_hash, route_kind, session_id_hash, turn_id_hash,
+                       cwd_hash, marked_at, expires_at
+                FROM completion_prompt_markers
+                WHERE route_key_hash = ?
+                """,
+                (route.route_key_hash,),
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def delete_completion_prompt_marker(self, route: CompletionRoute) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM completion_prompt_markers WHERE route_key_hash = ?",
+                (route.route_key_hash,),
             )
 
     def _insert_away_window(
@@ -1717,6 +1934,12 @@ class StateStore:
     def cwd_hash(cwd: str) -> str:
         normalized = str(Path(cwd).expanduser().resolve(strict=False))
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def hash_sensitive(value: str | None) -> str | None:
+        if value is None:
+            return None
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -22,6 +22,7 @@ def test_guidance_block_is_idempotent_and_mentions_contract():
 
     assert once == twice
     assert "notify stage-summary" in once
+    assert '--session-id "${CODEX_THREAD_ID:-}"' in once
     assert ".codex-away-mode/latest-summary.md" not in once
     assert "Do not write Codex Away Mode summary" in once
     assert "~/.codex" not in once
@@ -36,6 +37,7 @@ def test_guidance_block_is_idempotent_and_mentions_contract():
     assert "away status" in once
     assert "goal" in once
     assert "not active" in once
+    assert "Stop hook also suppresses completion notifications" in once
     assert "missing summary" in once
     assert "keep the Codex chat quiet" in once
     assert "heartbeat" in once
@@ -50,7 +52,7 @@ def test_guidance_block_uses_managed_cli_command():
         cli_command="/managed/bin/codex-away-mode",
     )
 
-    assert "`/managed/bin/codex-away-mode notify stage-summary --cwd \"$PWD\" --json`" in content
+    assert "`/managed/bin/codex-away-mode notify stage-summary --cwd \"$PWD\" --session-id \"${CODEX_THREAD_ID:-}\" --json`" in content
     assert "use `/managed/bin/codex-away-mode away start ... --json`" in content
     assert "call `/managed/bin/codex-away-mode away resume \"$away_session_id\" --resume-token \"$resume_token\"`" in content
     assert "`codex-away-mode notify stage-summary" not in content

@@ -194,7 +194,7 @@ def test_permission_request_card_is_a_desktop_approval_reminder(monkeypatch):
 
     card = cards.permission_request_card(
         project="Skill-Create",
-        cwd="/Users/hutong/Codex项目/Skill-Create",
+        cwd="/Users/example/Codex/Skill-Create",
         tool_name="Bash",
         description="删除工作区外的临时文件",
         command="rm /workspace-outside/codex-desktop-permission-target.txt",

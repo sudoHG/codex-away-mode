@@ -36,17 +36,20 @@ Read the Skill first:
 - `codex-away-mode/SKILL.md`
 - `codex-away-mode/references/install.md`
 - `codex-away-mode/references/usage.md`
+- `codex-away-mode/references/troubleshooting.md`
+- `codex-away-mode/references/privacy.md`
 
 ## What It Does
 
 - Sends completion cards from summaries staged through `codex-away-mode notify stage-summary`.
 - Sends approval reminder cards when Codex raises a `PermissionRequest`; the user still approves or rejects in Codex Desktop.
-- Protects against cross-project notifications by storing staged summaries in the central runtime store keyed by cwd hash.
+- Protects against cross-project notifications by routing staged summaries through the Codex session/thread id first, with cwd hash only as a fallback.
 - Keeps Codex Away Mode runtime files out of project workspaces.
-- Sends a no-summary fallback only for fresh user turns whose transcript does not show an active goal.
+- Sends a no-summary fallback only for user-triggered sessions whose transcript does not show an active goal.
 - Supports `all`, `off`, and `snooze` notification modes.
 - Starts user-triggered Away Mode waits that accept only replies to the corresponding Feishu card.
 - Handles `/延长等待`, `/状态`, `/结束等待`, timeout cards, ordinary-private-chat hints, and `Get` reaction acknowledgement.
+- Provides local troubleshooting guidance for Hook trust, Feishu authorization, transport errors, and stale Away Mode sessions.
 
 ## Public Package Layout
 

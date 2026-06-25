@@ -388,6 +388,37 @@ def test_notify_stage_summary_writes_runtime_store_without_workspace_files(
     assert not (workspace / ".codex-away-mode").exists()
 
 
+def test_notify_stage_summary_uses_env_thread_id_for_completion_route(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread_from_env")
+    monkeypatch.setattr(notify, "skip_cwd_reason", lambda paths, cwd: None)
+    workspace = tmp_path / "workspace"
+    worktree = workspace / "worktrees" / "fix"
+    workspace.mkdir()
+    worktree.mkdir(parents=True)
+
+    code = cli.main(
+        ["notify", "stage-summary", "--cwd", str(worktree), "--json"],
+        stdin=StringIO("summary"),
+    )
+    captured = capsys.readouterr()
+
+    assert code == 0
+    payload = parse_stdout(captured)
+    assert payload["status"] == "staged"
+    assert payload["route_kind"] == "session"
+    assert payload["route_key_hash"]
+    paths = RuntimePaths.from_environment()
+    store = StateStore(paths.runtime_state_path)
+    stop_route = store.completion_route(
+        cwd=str(workspace),
+        session_id="thread_from_env",
+    )
+    assert store.get_completion_summary(stop_route)["summary_markdown"] == "summary"
+
+
 def test_notify_stage_summary_rejects_insecure_runtime_dir_without_workspace_fallback(
     tmp_path, monkeypatch, capsys
 ):
@@ -1192,6 +1223,48 @@ def test_away_cleanup_json_closes_stale_session(tmp_path, monkeypatch, capsys):
     assert "oc_secret_chat" not in json.dumps(payload)
     assert store.get_away_session(session_id)["close_reason"] == "manual_cleanup_timeout"
     assert store.get_window(window_id)["close_reason"] == "manual_cleanup_timeout"
+
+
+def test_away_cleanup_orphan_active_closes_future_deadline_expired_waiter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CODEX_AWAY_HOME", str(tmp_path / "away-home"))
+    paths = RuntimePaths.from_environment()
+    store = StateStore(paths.runtime_state_path)
+    session_id = store.create_away_session(
+        project="Demo",
+        cwd="/workspace/demo",
+        task="wait",
+        started_at="2026-06-18T09:00:00Z",
+        deadline_at="2099-06-18T11:00:00Z",
+    )
+    window_id = store.create_away_window_guarded(
+        recipient_id="oc_secret_chat",
+        session_id=session_id,
+        card_message_id="om_card",
+        created_at="2026-06-18T09:00:00Z",
+        deadline_at="2099-06-18T11:00:00Z",
+        owner=session_id,
+        lock_expires_at="2099-06-18T11:00:00Z",
+        now="2026-06-18T09:00:00Z",
+    )
+    assert window_id is not None
+    store.renew_waiter_lease(
+        session_id,
+        owner="waiter",
+        now="2026-06-18T09:00:00Z",
+        expires_at="2026-06-18T09:01:00Z",
+    )
+
+    code, captured = run_cli(capsys, "away", "cleanup", "--orphan-active", "--json")
+
+    payload = parse_stdout(captured)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "away cleanup"
+    assert payload["closed_count"] == 1
+    assert payload["closed"][0]["close_reason"] == "manual_cleanup_orphan_active"
+    assert "oc_secret_chat" not in json.dumps(payload)
+    assert store.get_away_session(session_id)["close_reason"] == "manual_cleanup_orphan_active"
+    assert store.get_window(window_id)["close_reason"] == "manual_cleanup_orphan_active"
 
 
 def test_cli_away_status_does_not_read_existing_workspace_state(tmp_path, monkeypatch, capsys):

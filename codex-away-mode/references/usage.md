@@ -6,30 +6,27 @@ A Codex agent should stage a short final-turn summary through the CLI:
 
 ```bash
 CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
-"$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --json <<'EOF'
+"$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --session-id "${CODEX_THREAD_ID:-}" --json <<'EOF'
 **项目**
 Demo
-
-**工作目录**
-/workspace/demo
 
 **完成**
 本轮完成事项。
 EOF
 ```
 
-Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-summary.md`, prompt marker files, SQLite files, or any other Codex Away Mode runtime files under the current workspace cwd. The CLI stores prompt markers and staged summaries in the central per-user runtime store, keyed by `sha256(normalized_cwd)`.
+Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-summary.md`, prompt marker files, SQLite files, or any other Codex Away Mode runtime files under the current workspace cwd. The CLI stores prompt markers and staged summaries in the central per-user runtime store, keyed first by the Codex session/thread id and only falling back to `sha256(normalized_cwd)` when no session id is available.
 
-The summary should include a `**工作目录**` section for card display and reviewer clarity. The Stop hook selects the staged summary by the current session cwd hash; a project A summary cannot be read by project B.
+The Stop hook selects the staged summary by the same session/thread route, so an agent may work inside a nested worktree while the Stop hook still resolves the outer Codex thread correctly. The cwd hash fallback still isolates unrelated projects when no session id is available. The agent may include workspace context inside the summary when it is useful for review, but routine Feishu completion cards do not display the raw cwd.
 
-If the summary is missing, the hook sends a no-summary fallback only when all of these are true: the cwd is a user workspace, a fresh `UserPromptSubmit` marker exists, and the transcript goal status is not `active`. If the cwd is `/`, `${CODEX_HOME:-~/.codex}`, `/tmp`, another internal temporary location, or the transcript shows an active goal, the hook skips notification. For in-progress goal-mode continuation turns, omit the summary until the goal is complete, blocked, or needs human attention.
+If the summary is missing, the hook sends a no-summary fallback only when all of these are true: the cwd is a user workspace, the session has a user prompt marker, and the transcript goal status is not `active`. If the cwd is `/`, `${CODEX_HOME:-~/.codex}`, `/tmp`, another internal temporary location, or the transcript shows an active goal, the hook skips notification. For in-progress goal-mode continuation turns, omit the summary until the goal is complete, blocked, or needs human attention.
 
 Hook commands:
 
 ```bash
 CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
 "$CODEX_AWAY_CLI" notify mark-prompt --json
-"$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --json
+"$CODEX_AWAY_CLI" notify stage-summary --cwd "$PWD" --session-id "${CODEX_THREAD_ID:-}" --json
 "$CODEX_AWAY_CLI" notify stop --json
 "$CODEX_AWAY_CLI" notify permission-request --hook-json
 ```
@@ -43,7 +40,7 @@ CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
 "$CODEX_AWAY_CLI" notify snooze 2h
 ```
 
-Default mode is `all`. Completion card titles should include the project name when available. Footer text should keep operational metadata out of the body in one compact note with no blank lines. Show time as local `HH:MM` only. Include the workspace cwd when useful. User-facing cards should say that the user can tell Codex in natural language, using wording like `告诉Codex「关掉飞书完成通知」或「暂停飞书通知 2 小时」`; do not show `config.toml`, `CODEX_HOME`, UTC offsets, dates, or raw CLI commands in routine notification cards. The CLI commands above are for Codex/installer execution, not the main user instruction text.
+Default mode is `all`. Completion card titles should include the project name when available. Footer text should keep operational metadata out of the body in one compact note with no blank lines. Show time as local `HH:MM` only. Routine notification cards should not display the raw workspace cwd. User-facing cards should say that the user can tell Codex in natural language, using wording like `修改通知模式：告诉Codex「暂停飞书通知 2 小时」`; do not show `config.toml`, `CODEX_HOME`, UTC offsets, dates, raw cwd, or raw CLI commands in routine notification cards. The CLI commands above are for Codex/installer execution, not the main user instruction text.
 
 ## Approval Reminders
 
@@ -148,6 +145,9 @@ Use cleanup only for diagnostics or stale runtime repair:
 CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
 "$CODEX_AWAY_CLI" away cleanup --dry-run --json
 "$CODEX_AWAY_CLI" away cleanup --json
+"$CODEX_AWAY_CLI" away cleanup --orphan-active --dry-run --json
 ```
 
-The command only closes Away Sessions that are already past their deadline and have no live waiter lease. It does not send Feishu cards and does not replace the normal timeout path. Run `away cleanup --dry-run --json` first, then run the non-dry-run command only when the stale sessions are expected leftovers from tests, crashes, or interrupted validation.
+By default, the command only closes Away Sessions that are already past their deadline and have no live waiter lease. It does not send Feishu cards and does not replace the normal timeout path. Run `away cleanup --dry-run --json` first, then run the non-dry-run command only when the stale sessions are expected leftovers from tests, crashes, or interrupted validation.
+
+Use `--orphan-active` only when a resume attempt failed after Codex already left the normal wait loop, the waiter lease is expired, and `away status --json` shows an active session that cannot be resumed by the current turn. This mode may close a future-deadline session if no live waiter lease exists. It is intended for crash or transport-error recovery, not normal timeout handling.

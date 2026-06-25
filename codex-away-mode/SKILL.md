@@ -21,17 +21,17 @@ Use this skill to keep a live Codex turn reachable while the user is away. Route
 
 ## Setup
 
-For installation, permissions, hook trust, and verification, read `references/install.md`. Treat `install --yes` as a setup step, not completion. The installer manages a pinned private `@larksuite/cli` dependency; do not default to global or latest `lark-cli` during setup. Feishu binding must be verified with `setup feishu`. If Feishu app config or user OAuth is pending, tell the user to confirm in the browser and then rerun `setup feishu --json`; do not ask them to run `lark-cli` commands, copy device codes, or use `--device-code` on the main path. Use `setup feishu --restart-auth --json` only when authorization expired or the user explicitly wants a fresh authorization. `doctor --e2e-notify --json` verifies notification delivery only; it does not prove Codex Desktop trusted the Hook. Current Hook trust is checked by `doctor --json` against Codex Desktop's Hook state. Historical Hook execution records are diagnostic only and must not be treated as proof that the Hook is still trusted.
+For installation, permissions, hook trust, and verification, read `references/install.md`. For user-facing failures, read `references/troubleshooting.md`. For local data boundaries, read `references/privacy.md`. Treat `install --yes` as a setup step, not completion. The installer manages a pinned private `@larksuite/cli` dependency; do not default to global or latest `lark-cli` during setup. Feishu binding must be verified with `setup feishu`. If Feishu app config or user OAuth is pending, tell the user to confirm in the browser and then rerun `setup feishu --json`; do not ask them to run `lark-cli` commands, copy device codes, or use `--device-code` on the main path. Use `setup feishu --restart-auth --json` only when authorization expired or the user explicitly wants a fresh authorization. `doctor --e2e-notify --json` verifies notification delivery only; it does not prove Codex Desktop trusted the Hook. Current Hook trust is checked by `doctor --json` against Codex Desktop's Hook state. Historical Hook execution records are diagnostic only and must not be treated as proof that the Hook is still trusted.
 
 ## Completion Notifications
 
 If the local hook contract is installed, stage final-turn summaries through the CLI:
 
 ```bash
-"${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode" notify stage-summary --cwd "$PWD" --json
+"${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode" notify stage-summary --cwd "$PWD" --session-id "${CODEX_THREAD_ID:-}" --json
 ```
 
-Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-summary.md`, prompt markers, state databases, or any other Codex Away Mode runtime files under the current workspace cwd. The Stop hook reads the staged summary from the central runtime store by `cwd_hash`. If the summary is missing, the Stop hook sends a no-summary fallback only when a fresh user prompt marker exists and the current transcript does not show an active goal. For in-progress goal-mode continuation turns, do not stage a completion summary until the goal is complete, blocked, or needs human attention; active goal turns must not create fallback noise.
+Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-summary.md`, prompt markers, state databases, or any other Codex Away Mode runtime files under the current workspace cwd. The Stop hook reads the staged summary from the central runtime store by session/thread route first, with `cwd_hash` only as a fallback when no session id is available. If the summary is missing, the Stop hook sends a no-summary fallback only when the session has a user prompt marker and the current transcript does not show an active goal. For in-progress goal-mode continuation turns, do not stage a completion summary until the goal is complete, blocked, or needs human attention; active goal turns must not create completion or fallback noise.
 
 ## Approval Reminders
 
