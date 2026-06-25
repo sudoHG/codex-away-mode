@@ -270,7 +270,7 @@ def test_completion_summary_accepts_child_project_inside_current_workspace(tmp_p
     now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
     paths = FakePaths(tmp_path / "codex-home")
     workspace = tmp_path / "workspace"
-    child_project = workspace / "Skill项目" / "示例Skill"
+    child_project = workspace / "skills" / "example-skill"
     child_project.mkdir(parents=True)
     cwd = str(workspace)
     notify.stage_summary(paths, cwd=cwd, summary_markdown="summary", now=now)

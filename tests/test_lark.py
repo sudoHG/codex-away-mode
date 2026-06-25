@@ -448,7 +448,7 @@ def test_start_app_config_init_redacts_failure_detail():
                 args=["lark-cli", "config", "init", "--new"],
                 returncode=1,
                 stdout="",
-                stderr="failed token abcdef1234567890 for app_secret_longvalue",
+                stderr="failed token abcdef1234567890 for app_fakecredential",
             )
         ]
     )
@@ -460,7 +460,7 @@ def test_start_app_config_init_redacts_failure_detail():
     assert result["failed_code"] == "lark_app_config_init_failed"
     detail = json.dumps(result["developer_detail"], ensure_ascii=False)
     assert "abcdef1234567890" not in detail
-    assert "app_secret_longvalue" not in detail
+    assert "app_fakecredential" not in detail
 
 
 def test_auth_login_start_opens_oauth_verification_url():
