@@ -1,5 +1,9 @@
 # Codex Away Mode
 
+<p align="center">
+  <img src="https://count.getloli.com/@sudoHG-codex-away-mode?theme=3d-num" alt="sudoHG-codex-away-mode visitor counter">
+</p>
+
 中文别名：Codex 离开模式。
 
 English version: [README.en.md](README.en.md)
