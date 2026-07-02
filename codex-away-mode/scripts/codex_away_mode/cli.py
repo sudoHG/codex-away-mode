@@ -9,7 +9,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from . import cards, doctor, install, notify, setup, status as away_status, uninstall
+from . import __version__, cards, doctor, install, notify, setup, status as away_status, uninstall
 from .away import AwayWaiter
 from .config import RuntimePaths, RuntimeStateError, ensure_runtime_state_writable, load_config, save_config
 from .lark import LarkCli, LarkCliError
@@ -192,7 +192,14 @@ def _main(argv, *, stdin=None):
     args = parser.parse_args(argv)
 
     if args.command == "version":
-        emit_json({"ok": True, "command": "version", "name": "codex-away-mode"})
+        emit_json(
+            {
+                "ok": True,
+                "command": "version",
+                "name": "codex-away-mode",
+                "version": __version__,
+            }
+        )
         return 0
 
     paths = RuntimePaths.from_environment()

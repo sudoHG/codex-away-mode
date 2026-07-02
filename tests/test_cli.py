@@ -74,6 +74,7 @@ def test_version_json_ok(capsys):
     assert payload["ok"] is True
     assert payload["command"] == "version"
     assert payload["name"] == "codex-away-mode"
+    assert payload["version"] == "0.2.0"
 
 
 def test_unknown_command_returns_json_error(capsys):
