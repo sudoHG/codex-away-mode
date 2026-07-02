@@ -188,7 +188,7 @@ Extend the wait by 1 hour
 
 When Codex triggers a permission approval request, Feishu sends a reminder. The reminder only tells you that the desktop app is waiting for confirmation. It cannot approve the request for you.
 
-You still need to return to the Codex desktop app to handle the approval.
+The reminder can add Feishu in-app urgent delivery, but you still need to return to the Codex desktop app to handle the approval.
 
 ## Agent Entry Points
 

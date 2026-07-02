@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-INSTALL_STATE_KEYS = ("status", "route_key", "e2e_notify")
+INSTALL_STATE_KEYS = ("status", "route_key", "e2e_notify", "approval_urgent")
 
 
 @dataclass(frozen=True)
@@ -295,6 +295,18 @@ class StateStore:
         }.items():
             if name not in window_columns:
                 conn.execute(f"ALTER TABLE away_windows ADD COLUMN {name} {ddl}")
+
+        approval_columns = self._table_columns(conn, "approval_notifications")
+        for name, ddl in {
+            "urgent_status": "TEXT",
+            "urgent_sent_at": "TEXT",
+            "urgent_error_code": "TEXT",
+            "urgent_error_detail": "TEXT",
+            "urgent_invalid_user_count": "INTEGER NOT NULL DEFAULT 0",
+            "urgent_invalid_user_hashes_json": "TEXT",
+        }.items():
+            if name not in approval_columns:
+                conn.execute(f"ALTER TABLE approval_notifications ADD COLUMN {name} {ddl}")
 
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -1539,6 +1551,12 @@ class StateStore:
             "sent_at": None,
             "suppressed_count": 0,
             "status": "reserved",
+            "urgent_status": None,
+            "urgent_sent_at": None,
+            "urgent_error_code": None,
+            "urgent_error_detail": None,
+            "urgent_invalid_user_count": 0,
+            "urgent_invalid_user_hashes_json": None,
         }
 
     def mark_approval_notification_result(
@@ -1556,6 +1574,47 @@ class StateStore:
                 WHERE dedupe_key = ?
                 """,
                 (status, sent_at, dedupe_key),
+            )
+
+    def mark_approval_notification_urgent_result(
+        self,
+        dedupe_key: str,
+        *,
+        urgent_status: str,
+        urgent_sent_at: str | None = None,
+        urgent_error_code: str | None = None,
+        urgent_error_detail: str | None = None,
+        urgent_invalid_user_count: int = 0,
+        urgent_invalid_user_hashes: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        invalid_hashes_json = None
+        if urgent_invalid_user_hashes:
+            invalid_hashes_json = json.dumps(
+                list(urgent_invalid_user_hashes),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE approval_notifications
+                SET urgent_status = ?,
+                    urgent_sent_at = COALESCE(?, urgent_sent_at),
+                    urgent_error_code = ?,
+                    urgent_error_detail = ?,
+                    urgent_invalid_user_count = ?,
+                    urgent_invalid_user_hashes_json = ?
+                WHERE dedupe_key = ?
+                """,
+                (
+                    urgent_status,
+                    urgent_sent_at,
+                    urgent_error_code,
+                    urgent_error_detail,
+                    int(urgent_invalid_user_count or 0),
+                    invalid_hashes_json,
+                    dedupe_key,
+                ),
             )
 
     def get_approval_notification(self, dedupe_key: str) -> dict[str, Any] | None:

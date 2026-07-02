@@ -54,6 +54,19 @@ class FakeLark:
         return self.result
 
 
+class FakeUrgentLark(FakeLark):
+    def __init__(self, result=None, urgent_result=None, urgent_error=None):
+        super().__init__(result=result)
+        self.urgent_result = urgent_result or {"data": {"invalid_user_id_list": []}}
+        self.urgent_error = urgent_error
+
+    def send_permission_request_urgent(self, *, message_id):
+        self.calls.append(("permission_request_urgent", message_id))
+        if self.urgent_error:
+            raise self.urgent_error
+        return self.urgent_result
+
+
 def write_summary(path, cwd, extra="done"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -965,6 +978,115 @@ def test_send_permission_request_deduplicates_same_payload(tmp_path):
     )
     assert stored["suppressed_count"] == 1
     assert "/workspace-outside" not in stored["dedupe_key"]
+
+
+def test_send_permission_request_sends_urgent_after_card(tmp_path):
+    paths = FakePaths(tmp_path)
+    lark = FakeUrgentLark(
+        result=SimpleNamespace(message_id="om_permission"),
+        urgent_result={"data": {"invalid_user_id_list": []}},
+    )
+    now = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+    hook_stdin = json.dumps(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "cwd": "/workspace/demo",
+            "session_id": "session_1",
+            "turn_id": "turn_1",
+            "tool_input": {
+                "command": "date",
+                "description": "用于触发审批提醒。",
+            },
+        }
+    )
+
+    result = notify.send_permission_request(
+        paths,
+        lark,
+        hook_stdin=hook_stdin,
+        now=now,
+    )
+
+    assert result.status == "sent"
+    assert [call[0] for call in lark.calls] == [
+        "permission_request",
+        "permission_request_urgent",
+    ]
+    stored = StateStore(paths.runtime_state_path).get_approval_notification(result.detail)
+    assert stored["status"] == "sent"
+    assert stored["urgent_status"] == "sent"
+    assert stored["urgent_invalid_user_count"] == 0
+
+
+def test_send_permission_request_hashes_invalid_urgent_users(tmp_path):
+    paths = FakePaths(tmp_path)
+    lark = FakeUrgentLark(
+        result=SimpleNamespace(message_id="om_permission"),
+        urgent_result={"data": {"invalid_user_id_list": ["ou_sensitive_user_123456"]}},
+    )
+    now = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+    hook_stdin = json.dumps(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "cwd": "/workspace/demo",
+            "session_id": "session_1",
+            "turn_id": "turn_1",
+            "tool_input": {"command": "date"},
+        }
+    )
+
+    result = notify.send_permission_request(
+        paths,
+        lark,
+        hook_stdin=hook_stdin,
+        now=now,
+    )
+
+    assert result.status == "sent"
+    stored = StateStore(paths.runtime_state_path).get_approval_notification(result.detail)
+    assert stored["status"] == "sent"
+    assert stored["urgent_status"] == "failed"
+    assert stored["urgent_error_code"] == "approval_urgent_invalid_user"
+    assert stored["urgent_invalid_user_count"] == 1
+    serialized = json.dumps(stored, ensure_ascii=False)
+    assert "ou_sensitive_user_123456" not in serialized
+
+
+def test_send_permission_request_urgent_failure_keeps_card_sent(tmp_path):
+    paths = FakePaths(tmp_path)
+    lark = FakeUrgentLark(
+        result=SimpleNamespace(message_id="om_permission"),
+        urgent_error=RuntimeError(
+            "missing scope im:message.urgent for ou_sensitive_user_123456"
+        ),
+    )
+    now = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+    hook_stdin = json.dumps(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "cwd": "/workspace/demo",
+            "session_id": "session_1",
+            "turn_id": "turn_1",
+            "tool_input": {"command": "date"},
+        }
+    )
+
+    result = notify.send_permission_request(
+        paths,
+        lark,
+        hook_stdin=hook_stdin,
+        now=now,
+    )
+
+    assert result.status == "sent"
+    stored = StateStore(paths.runtime_state_path).get_approval_notification(result.detail)
+    assert stored["status"] == "sent"
+    assert stored["urgent_status"] == "failed"
+    assert stored["urgent_error_code"] == "approval_urgent_permission_missing"
+    assert "ou_sensitive_user_123456" not in stored["urgent_error_detail"]
 
 
 def test_notification_modes_and_expired_snooze_are_pure(tmp_path):

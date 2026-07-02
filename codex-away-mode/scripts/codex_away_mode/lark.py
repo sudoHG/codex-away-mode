@@ -105,6 +105,45 @@ class LarkCli:
         ]
         self._run_json(args)
 
+    def urgent_app(self, *, message_id: str, user_id_list: list[str]) -> dict[str, Any]:
+        data = json.dumps(
+            {"user_id_list": user_id_list},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return self._run_json(
+            [
+                "im",
+                "messages",
+                "urgent_app",
+                "--as",
+                "bot",
+                "--message-id",
+                message_id,
+                "--user-id-type",
+                "open_id",
+                "--data",
+                data,
+                "--json",
+            ]
+        )
+
+    def preflight_urgent_app_command(self) -> dict[str, Any]:
+        text = self._run_text(["im", "messages", "urgent_app", "--help"])
+        required = ["--as", "--message-id", "--user-id-type", "--data", "--json"]
+        missing = [term for term in required if term not in text]
+        if missing:
+            return {
+                "ok": False,
+                "failed_code": "approval_urgent_command_unverified",
+                "missing": missing,
+            }
+        return {"ok": True}
+
+    def version_info(self) -> dict[str, str]:
+        text = self._run_text(["--version"]).strip()
+        return {"binary": self.binary, "version": text}
+
     def preflight_auth_commands(self) -> dict[str, Any]:
         checks = {
             "auth": (["auth", "--help"], ["login", "status", "qrcode"]),

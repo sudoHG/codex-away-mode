@@ -64,3 +64,8 @@ If multiple Codex turns are waiting at once, reply to the corresponding card for
 
 PermissionRequest cards tell the user that Codex Desktop is waiting for approval. The user still must approve or reject inside Codex Desktop. This is intentional; the MVP does not run a persistent Feishu callback service.
 
+## Approval Urgent Verification Fails
+
+`doctor --e2e-approval-urgent --json` sends a real Feishu urgent test message. Run it only after telling the user.
+
+If it reports `approval_urgent_permission_missing`, the approval reminder card path can still work, but Feishu rejected the urgent call. Do not keep restarting OAuth. Ask the user to open Feishu Open Platform -> 权限管理 -> 开通权限, add `im:message.urgent` / 发送应用内加急消息, publish the app if the console asks for publishing, complete administrator approval if required, and rerun the explicit urgent verification. Some lark-cli schemas mention `im:message.urgent:app_send`, but the Feishu console may not expose it as a separate selectable permission; if it appears in the console, add it together.

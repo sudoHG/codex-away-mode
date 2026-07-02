@@ -35,7 +35,7 @@ Pass the summary markdown on stdin. Do not create `.codex-away-mode/`, `latest-s
 
 ## Approval Reminders
 
-The installer manages a `PermissionRequest` hook. When Codex asks the user to approve an operation, the hook may send a Feishu reminder card. This is only a reminder: the user must still approve or reject in Codex Desktop. Do not tell users they can approve Codex operations in Feishu.
+The installer manages a `PermissionRequest` hook. When Codex asks the user to approve an operation, the hook may send a Feishu reminder card and, when configured, add Feishu in-app urgent delivery to that same card. This is only a reminder: the user must still approve or reject in Codex Desktop. Do not tell users they can approve Codex operations in Feishu. Run `doctor --e2e-approval-urgent --json` only after telling the user it will send a real Feishu urgent test message.
 
 ## Away Mode Workflow
 

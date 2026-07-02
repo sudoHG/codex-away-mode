@@ -30,7 +30,7 @@ The summary body is passed on stdin and stored in the central runtime store keye
 
 ## Approval Reminders
 
-PermissionRequest cards are reminders only. Feishu cannot approve or reject Codex operations in the MVP architecture. The user must return to Codex Desktop to approve or reject the operation.
+PermissionRequest cards are reminders only. Feishu cannot approve or reject Codex operations in the MVP architecture. The user must return to Codex Desktop to approve or reject the operation. Approval urgent diagnostics must not store raw Feishu user ids; invalid urgent recipients are recorded only as counts and short hashes.
 
 ## What Not To Publish
 

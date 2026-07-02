@@ -51,7 +51,7 @@ CODEX_AWAY_CLI="${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode"
 "$CODEX_AWAY_CLI" notify permission-request --hook-json
 ```
 
-This command reads the hook payload from stdin and sends a Feishu reminder card when Codex is waiting for user approval. In hook mode it prints `{}` and exits 0 so the notification path cannot approve, deny, or block the original Codex approval flow. Feishu replies to this card are not prompts and do not approve the operation. Tell the user to return to Codex Desktop to approve or reject.
+This command reads the hook payload from stdin and sends a Feishu reminder card when Codex is waiting for user approval. If `approval_notifications_urgent_app_enabled` is enabled, it tries to add Feishu in-app urgent delivery to the same card. In hook mode it prints `{}` and exits 0 so the notification path cannot approve, deny, or block the original Codex approval flow. Feishu replies to this card are not prompts and do not approve the operation. Tell the user to return to Codex Desktop to approve or reject.
 
 ## Away Mode
 

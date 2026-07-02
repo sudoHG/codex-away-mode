@@ -8,6 +8,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from . import cards
 from .config import AppConfig, effective_notification_mode as _config_mode
@@ -160,7 +161,7 @@ def send_permission_request(
         return NotifyResult("suppressed", context.dedupe_key)
 
     try:
-        lark.send_permission_request_card(
+        send_result = lark.send_permission_request_card(
             {
                 "project": cards.project_from_cwd(context.cwd),
                 "cwd": context.cwd,
@@ -184,7 +185,107 @@ def send_permission_request(
         status="sent",
         sent_at=seen_at,
     )
+    _send_permission_request_urgent_if_enabled(
+        store,
+        lark,
+        config=config,
+        context=context,
+        message_id=getattr(send_result, "message_id", None),
+        sent_at=seen_at,
+    )
     return NotifyResult("sent", context.dedupe_key)
+
+
+def _send_permission_request_urgent_if_enabled(
+    store: StateStore,
+    lark,
+    *,
+    config: AppConfig,
+    context: PermissionRequestContext,
+    message_id: str | None,
+    sent_at: str,
+) -> None:
+    if not getattr(config, "approval_notifications_urgent_app_enabled", True):
+        store.mark_approval_notification_urgent_result(
+            context.dedupe_key,
+            urgent_status="skipped_disabled",
+        )
+        return
+    if not message_id:
+        store.mark_approval_notification_urgent_result(
+            context.dedupe_key,
+            urgent_status="skipped_missing_message_id",
+            urgent_error_code="message_id_missing",
+        )
+        return
+    urgent_method = getattr(lark, "send_permission_request_urgent", None)
+    if urgent_method is None:
+        store.mark_approval_notification_urgent_result(
+            context.dedupe_key,
+            urgent_status="skipped_unavailable",
+            urgent_error_code="client_missing_urgent_method",
+        )
+        return
+    try:
+        result = urgent_method(message_id=message_id)
+    except Exception as exc:
+        store.mark_approval_notification_urgent_result(
+            context.dedupe_key,
+            urgent_status="failed",
+            urgent_error_code=_approval_urgent_error_code(exc),
+            urgent_error_detail=_truncate_display(_redact_for_display(str(exc)), 300),
+        )
+        return
+    invalid_ids = _extract_invalid_user_ids(result)
+    invalid_hashes = [_short_sensitive_hash(value) for value in invalid_ids]
+    if invalid_ids:
+        store.mark_approval_notification_urgent_result(
+            context.dedupe_key,
+            urgent_status="failed",
+            urgent_error_code="approval_urgent_invalid_user",
+            urgent_error_detail="Feishu urgent_app returned invalid_user_id_list.",
+            urgent_invalid_user_count=len(invalid_ids),
+            urgent_invalid_user_hashes=invalid_hashes,
+        )
+        return
+    store.mark_approval_notification_urgent_result(
+        context.dedupe_key,
+        urgent_status="sent",
+        urgent_sent_at=sent_at,
+        urgent_invalid_user_count=len(invalid_ids),
+        urgent_invalid_user_hashes=invalid_hashes,
+    )
+
+
+def _approval_urgent_error_code(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "im:message.urgent" in text or "permission" in text or "scope" in text:
+        return "approval_urgent_permission_missing"
+    if "feishu_user_id" in text or "user" in text and "missing" in text:
+        return "feishu_user_id_missing"
+    return "approval_urgent_failed"
+
+
+def _extract_invalid_user_ids(payload: Any) -> list[str]:
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "invalid_user_id_list" and isinstance(child, list):
+                    found.extend(str(item) for item in child if item)
+                else:
+                    walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def _short_sensitive_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def permission_request_context(hook_stdin: str | bytes | None) -> PermissionRequestContext | None:
@@ -913,6 +1014,7 @@ def _redact_for_display(value: str | None) -> str | None:
         r"Bearer\s+[A-Za-z0-9._\-]+",
         r"Authorization:\s*[^\s]+",
         r"(OPENAI_API_KEY|FEISHU_[A-Z0-9_]*|LARK_[A-Z0-9_]*|app_secret|tenant_access_token|user_access_token|refresh_token)=([^\s]+)",
+        r"\b(?:ou|oc)_[A-Za-z0-9_\-]{8,}\b",
     ]
     for pattern in patterns:
         text = re.sub(pattern, _redaction_replacement, text, flags=re.IGNORECASE)

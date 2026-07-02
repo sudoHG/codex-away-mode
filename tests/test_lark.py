@@ -81,6 +81,53 @@ def test_send_text_builds_verified_chat_command():
     assert result.chat_id == "oc_chat"
 
 
+def test_urgent_app_builds_verified_command():
+    runner = FakeRunner([{"data": {"invalid_user_id_list": []}}])
+    cli = LarkCli("lark-cli", runner=runner)
+
+    result = cli.urgent_app(message_id="om_permission", user_id_list=["ou_test_user"])
+
+    args, timeout = runner.calls[0]
+    assert args == [
+        "im",
+        "messages",
+        "urgent_app",
+        "--as",
+        "bot",
+        "--message-id",
+        "om_permission",
+        "--user-id-type",
+        "open_id",
+        "--data",
+        json.dumps({"user_id_list": ["ou_test_user"]}, separators=(",", ":")),
+        "--json",
+    ]
+    assert timeout == 30
+    assert result["data"]["invalid_user_id_list"] == []
+
+
+def test_preflight_urgent_app_command_checks_verified_terms():
+    runner = FakeRunner(
+        [
+            "--as --message-id --user-id-type --data --json",
+        ]
+    )
+    cli = LarkCli("lark-cli", runner=runner)
+
+    assert cli.preflight_urgent_app_command() == {"ok": True}
+    assert runner.calls[0][0] == ["im", "messages", "urgent_app", "--help"]
+
+
+def test_version_info_uses_lark_cli_version_command():
+    runner = FakeRunner(["lark-cli version 1.0.57\n"])
+    cli = LarkCli("/managed/lark-cli", runner=runner)
+
+    result = cli.version_info()
+
+    assert result == {"binary": "/managed/lark-cli", "version": "lark-cli version 1.0.57"}
+    assert runner.calls[0][0] == ["--version"]
+
+
 def test_list_messages_builds_verified_command_and_maps_messages():
     runner = FakeRunner(
         [

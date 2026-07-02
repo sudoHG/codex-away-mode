@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from codex_away_mode import doctor, hook_trust, install, notify, uninstall
 from codex_away_mode.config import AppConfig, load_config, save_config
-from codex_away_mode.lark import LarkMessage, SendResult
+from codex_away_mode.lark import LarkCliError, LarkMessage, SendResult
 from codex_away_mode.state import StateStore
 from codex_away_mode.time import FakeClock
 
@@ -32,13 +32,32 @@ class FakePaths:
 
 
 class FakeLark:
-    def __init__(self, messages=None, test_chat_id="oc_test_chat"):
+    def __init__(
+        self,
+        messages=None,
+        test_chat_id="oc_test_chat",
+        urgent_error=None,
+        urgent_result=None,
+        preflight_error=None,
+        send_error=None,
+        version="lark-cli 1.0.57",
+        app_config=None,
+    ):
         self.cards = []
         self.list_calls = []
+        self.urgent_calls = []
         self.messages = list(messages or [])
         self.test_chat_id = test_chat_id
+        self.urgent_error = urgent_error
+        self.urgent_result = urgent_result or {"data": {"invalid_user_id_list": []}}
+        self.preflight_error = preflight_error
+        self.send_error = send_error
+        self.version = version
+        self.app_config = app_config or {"ok": True, "detail": {"appId": "cli_test_app"}}
 
     def send_interactive_card(self, *, card, user_id=None, chat_id=None):
+        if self.send_error:
+            raise self.send_error
         self.cards.append({"card": card, "user_id": user_id, "chat_id": chat_id})
         return SendResult(message_id="om_probe_card", chat_id=chat_id or "oc_sent_chat")
 
@@ -48,6 +67,25 @@ class FakeLark:
 
     def send_test_notification(self):
         return SimpleNamespace(chat_id=self.test_chat_id)
+
+    def preflight_urgent_app_command(self):
+        if self.preflight_error:
+            raise self.preflight_error
+        return {"ok": True}
+
+    def urgent_app(self, *, message_id, user_id_list):
+        self.urgent_calls.append(
+            {"message_id": message_id, "user_id_list": list(user_id_list)}
+        )
+        if self.urgent_error:
+            raise self.urgent_error
+        return self.urgent_result
+
+    def version_info(self):
+        return {"version": self.version}
+
+    def app_config_status(self):
+        return self.app_config
 
 
 def managed_hooks_payload():
@@ -276,6 +314,252 @@ def test_doctor_e2e_notify_stages_summary_without_marking_hook_installed(
     assert "Stop hook can record execution" not in report["next_step"]
 
 
+def test_doctor_e2e_approval_urgent_sends_card_and_records_verified_state(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+    lark = FakeLark(urgent_result={"data": {"invalid_user_id_list": []}})
+
+    report = doctor.run_doctor(
+        paths,
+        e2e_approval_urgent=True,
+        lark=lark,
+        clock=FakeClock(doctor.parse_utc("2026-06-24T10:00:00Z")),
+    )
+
+    assert report["ok"] is True
+    assert "approval_urgent_verified" in report["passed_codes"]
+    assert lark.cards[0]["chat_id"] == "oc_test_chat"
+    assert lark.urgent_calls == [
+        {"message_id": "om_probe_card", "user_id_list": ["ou_sensitive_user_123456"]}
+    ]
+    state = StateStore(paths.install_state_path).get_install_state("approval_urgent")
+    assert state["status"] == "verified"
+    assert state["approval_urgent_verified_feishu_user_id_hash"]
+    assert "ou_sensitive_user_123456" not in json.dumps(state, ensure_ascii=False)
+
+
+def test_doctor_e2e_approval_urgent_reports_permission_missing(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+
+    report = doctor.run_doctor(
+        paths,
+        e2e_approval_urgent=True,
+        lark=FakeLark(urgent_error=RuntimeError("missing scope im:message.urgent")),
+        clock=FakeClock(doctor.parse_utc("2026-06-24T10:00:00Z")),
+    )
+
+    assert report["ok"] is False
+    assert report["failed_codes"] == ["approval_urgent_permission_missing"]
+    assert "im:message.urgent" in report["next_step"]
+
+
+def test_doctor_e2e_approval_urgent_structures_preflight_exception(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+
+    report = doctor.run_doctor(
+        paths,
+        e2e_approval_urgent=True,
+        lark=FakeLark(preflight_error=LarkCliError("urgent_app help missing")),
+        clock=FakeClock(doctor.parse_utc("2026-06-24T10:00:00Z")),
+    )
+
+    assert report["ok"] is False
+    assert report["failed_codes"] == ["approval_urgent_command_unverified"]
+    assert "lark-cli" in report["next_step"]
+
+
+def test_doctor_e2e_approval_urgent_structures_card_send_exception(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+
+    report = doctor.run_doctor(
+        paths,
+        e2e_approval_urgent=True,
+        lark=FakeLark(send_error=LarkCliError("send failed")),
+        clock=FakeClock(doctor.parse_utc("2026-06-24T10:00:00Z")),
+    )
+
+    assert report["ok"] is False
+    assert report["failed_codes"] == ["approval_urgent_card_send_failed"]
+    assert "基础通知" in report["next_step"]
+
+
+def test_doctor_e2e_approval_urgent_fails_on_invalid_user(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+
+    report = doctor.run_doctor(
+        paths,
+        e2e_approval_urgent=True,
+        lark=FakeLark(
+            urgent_result={"data": {"invalid_user_id_list": ["ou_sensitive_user_123456"]}}
+        ),
+        clock=FakeClock(doctor.parse_utc("2026-06-24T10:00:00Z")),
+    )
+
+    assert report["ok"] is False
+    assert report["failed_codes"] == ["approval_urgent_invalid_user"]
+    assert "setup feishu" in report["next_step"]
+
+
+def test_doctor_degrades_when_approval_urgent_enabled_but_unverified(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    config = load_config(paths.config_path)
+    mark_notify_delivery_verified(paths)
+    record_stop_hook_invocation(paths)
+    write_codex_hook_state(paths)
+
+    report = doctor.run_doctor(paths)
+
+    assert "approval_urgent_unverified" in report["degraded_codes"]
+    assert "approval_urgent_verified" not in report["passed_codes"]
+    assert "doctor --e2e-approval-urgent" in report["next_step"]
+
+
+def test_doctor_accepts_current_approval_urgent_verification(tmp_path, monkeypatch):
+    paths = FakePaths(tmp_path)
+    config = AppConfig(
+        feishu_chat_id="oc_test_chat",
+        feishu_user_id="ou_sensitive_user_123456",
+    )
+    save_config(paths.config_path, config)
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    config = load_config(paths.config_path)
+    mark_notify_delivery_verified(paths)
+    record_stop_hook_invocation(paths)
+    write_codex_hook_state(paths)
+    StateStore(paths.install_state_path).set_install_state(
+        "approval_urgent",
+        {
+            "status": "verified",
+            "verified_at": "2026-06-24T10:00:00+00:00",
+            **doctor._approval_urgent_verification_context(
+                paths,
+                config,
+                lark=FakeLark(),
+            ),
+        },
+    )
+    monkeypatch.setattr(doctor, "LarkCli", lambda _binary: FakeLark())
+
+    report = doctor.run_doctor(paths)
+
+    assert report["ok"] is True
+    assert "approval_urgent_verified" in report["passed_codes"]
+
+
+def test_doctor_invalidates_approval_urgent_when_lark_cli_version_changes(tmp_path, monkeypatch):
+    paths = FakePaths(tmp_path)
+    config = AppConfig(
+        feishu_chat_id="oc_test_chat",
+        feishu_user_id="ou_sensitive_user_123456",
+    )
+    save_config(paths.config_path, config)
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    config = load_config(paths.config_path)
+    mark_notify_delivery_verified(paths)
+    record_stop_hook_invocation(paths)
+    write_codex_hook_state(paths)
+    StateStore(paths.install_state_path).set_install_state(
+        "approval_urgent",
+        {
+            "status": "verified",
+            "verified_at": "2026-06-24T10:00:00+00:00",
+            **doctor._approval_urgent_verification_context(
+                paths,
+                config,
+                lark=FakeLark(version="lark-cli 1.0.57"),
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        doctor,
+        "LarkCli",
+        lambda _binary: FakeLark(version="lark-cli 1.0.58"),
+    )
+
+    report = doctor.run_doctor(paths)
+
+    assert "approval_urgent_unverified" in report["degraded_codes"]
+    assert "approval_urgent_verified" not in report["passed_codes"]
+
+
+def test_doctor_invalidates_approval_urgent_when_lark_app_config_changes(tmp_path, monkeypatch):
+    paths = FakePaths(tmp_path)
+    config = AppConfig(
+        feishu_chat_id="oc_test_chat",
+        feishu_user_id="ou_sensitive_user_123456",
+    )
+    save_config(paths.config_path, config)
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    config = load_config(paths.config_path)
+    mark_notify_delivery_verified(paths)
+    record_stop_hook_invocation(paths)
+    write_codex_hook_state(paths)
+    StateStore(paths.install_state_path).set_install_state(
+        "approval_urgent",
+        {
+            "status": "verified",
+            "verified_at": "2026-06-24T10:00:00+00:00",
+            **doctor._approval_urgent_verification_context(
+                paths,
+                config,
+                lark=FakeLark(app_config={"ok": True, "detail": {"appId": "cli_old"}}),
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        doctor,
+        "LarkCli",
+        lambda _binary: FakeLark(app_config={"ok": True, "detail": {"appId": "cli_new"}}),
+    )
+
+    report = doctor.run_doctor(paths)
+
+    assert "approval_urgent_unverified" in report["degraded_codes"]
+    assert "approval_urgent_verified" not in report["passed_codes"]
+
+
 def test_doctor_requires_current_hook_trust_after_notify_delivery_verified(tmp_path):
     paths = FakePaths(tmp_path)
     save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
@@ -293,7 +577,13 @@ def test_doctor_requires_current_hook_trust_after_notify_delivery_verified(tmp_p
 
 def test_doctor_passes_after_notify_delivery_and_current_hook_trust(tmp_path):
     paths = FakePaths(tmp_path)
-    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            approval_notifications_urgent_app_enabled=False,
+        ),
+    )
     install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
     mark_notify_delivery_verified(paths)
     write_codex_hook_state(paths)
@@ -309,7 +599,13 @@ def test_doctor_passes_after_notify_delivery_and_current_hook_trust(tmp_path):
 
 def test_doctor_accepts_trusted_hash_without_enabled_for_current_codex_hook_state(tmp_path):
     paths = FakePaths(tmp_path)
-    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            approval_notifications_urgent_app_enabled=False,
+        ),
+    )
     install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
     mark_notify_delivery_verified(paths)
     write_codex_hook_state(
@@ -333,7 +629,13 @@ def test_doctor_accepts_trusted_hash_without_enabled_for_current_codex_hook_stat
 
 def test_doctor_accepts_permission_request_trust_hash_without_enabled_before_first_run(tmp_path):
     paths = FakePaths(tmp_path)
-    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            approval_notifications_urgent_app_enabled=False,
+        ),
+    )
     install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
     mark_notify_delivery_verified(paths)
     write_codex_hook_state(paths, permission_enabled=None)
@@ -350,7 +652,13 @@ def test_doctor_accepts_permission_request_trust_hash_without_enabled_before_fir
 
 def test_doctor_accepts_permission_request_missing_enabled_after_runtime_invocation(tmp_path):
     paths = FakePaths(tmp_path)
-    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            approval_notifications_urgent_app_enabled=False,
+        ),
+    )
     install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
     mark_notify_delivery_verified(paths)
     write_codex_hook_state(paths, permission_enabled=None)
@@ -368,7 +676,13 @@ def test_doctor_accepts_permission_request_missing_enabled_after_runtime_invocat
 
 def test_doctor_finds_recent_permission_request_invocation_after_many_old_events(tmp_path):
     paths = FakePaths(tmp_path)
-    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            approval_notifications_urgent_app_enabled=False,
+        ),
+    )
     install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
     mark_notify_delivery_verified(paths)
     write_codex_hook_state(paths, permission_enabled=None)
@@ -394,7 +708,13 @@ def test_doctor_finds_recent_permission_request_invocation_after_many_old_events
 
 def test_doctor_warns_about_stale_runtime_without_cleanup(tmp_path):
     paths = FakePaths(tmp_path)
-    save_config(paths.config_path, AppConfig(feishu_chat_id="oc_test_chat"))
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            approval_notifications_urgent_app_enabled=False,
+        ),
+    )
     install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
     mark_notify_delivery_verified(paths)
     write_codex_hook_state(paths)
@@ -507,6 +827,34 @@ def test_reinstall_invalidates_e2e_verified(tmp_path):
     e2e_state = StateStore(paths.install_state_path).get_install_state("e2e_notify")
     assert e2e_state["status"] == "invalidated"
     assert e2e_state["invalidated_reason"] == "hooks_rewritten"
+
+
+def test_reinstall_invalidates_approval_urgent_verified(tmp_path):
+    paths = FakePaths(tmp_path)
+    save_config(
+        paths.config_path,
+        AppConfig(
+            feishu_chat_id="oc_test_chat",
+            feishu_user_id="ou_sensitive_user_123456",
+        ),
+    )
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode")
+    config = load_config(paths.config_path)
+    store = StateStore(paths.install_state_path)
+    store.set_install_state(
+        "approval_urgent",
+        {
+            "status": "verified",
+            "verified_at": "2026-06-24T10:00:00Z",
+            **doctor._approval_urgent_verification_context(paths, config),
+        },
+    )
+
+    install.run_install(paths, yes=True, cli_command="/bin/codex-away-mode-new")
+
+    state = StateStore(paths.install_state_path).get_install_state("approval_urgent")
+    assert state["status"] == "invalidated"
+    assert state["invalidated_reason"] == "hooks_rewritten"
 
 
 def test_doctor_ignores_e2e_verified_when_hooks_fingerprint_mismatch(tmp_path):

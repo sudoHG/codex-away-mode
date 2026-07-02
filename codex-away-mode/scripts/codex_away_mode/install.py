@@ -284,6 +284,7 @@ def run_install(
         cli_command=managed_cli_command,
     )
     _invalidate_e2e_notify_if_verified(store)
+    _invalidate_approval_urgent_if_verified(store)
     changed.append(str(paths.hooks_json))
     store.update_install_status(
         status="hook_trust_pending",
@@ -665,6 +666,21 @@ def _invalidate_e2e_notify_if_verified(store: StateStore) -> None:
         return
     store.set_install_state(
         "e2e_notify",
+        {
+            **state,
+            "status": "invalidated",
+            "invalidated_at": datetime.now(timezone.utc).isoformat(),
+            "invalidated_reason": "hooks_rewritten",
+        },
+    )
+
+
+def _invalidate_approval_urgent_if_verified(store: StateStore) -> None:
+    state = store.get_install_state("approval_urgent", {})
+    if state.get("status") != "verified":
+        return
+    store.set_install_state(
+        "approval_urgent",
         {
             **state,
             "status": "invalidated",

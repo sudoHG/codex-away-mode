@@ -8,7 +8,7 @@ from typing import Any
 
 from . import cards, hook_trust, notify
 from .config import AppConfig, load_config, save_config
-from .lark import LarkCli
+from .lark import LarkCli, LarkCliError
 from .state import StateStore, open_install_store
 from .time import SystemClock
 
@@ -18,6 +18,7 @@ def run_doctor(
     *,
     route_probe: bool = False,
     e2e_notify: bool = False,
+    e2e_approval_urgent: bool = False,
     lark=None,
     clock=None,
     cwd: str | None = None,
@@ -104,6 +105,21 @@ def run_doctor(
             report["next_step"] = e2e_result.get("next_step", "No immediate action required.")
         return _finalize(report)
 
+    if e2e_approval_urgent:
+        urgent_result = run_e2e_approval_urgent(
+            paths,
+            config=config,
+            lark=lark or LarkCli(config.lark_cli_path),
+            clock=clock or SystemClock(),
+        )
+        if urgent_result["ok"]:
+            report["passed_codes"].append("approval_urgent_verified")
+        else:
+            _fail(report, urgent_result["failed_code"], urgent_result["agent_next_step"])
+        if not report["next_step"]:
+            report["next_step"] = urgent_result.get("next_step", "No immediate action required.")
+        return _finalize(report)
+
     hooks_result = hook_trust.inspect_managed_hooks(paths)
     if not hooks_result["ok"]:
         _fail(
@@ -142,6 +158,7 @@ def run_doctor(
                     status="installed",
                     next_step="Installation is verified.",
                 )
+                _append_approval_urgent_status(report, paths=paths, config=config, store=store)
                 if not report["next_step"]:
                     report["next_step"] = "No immediate action required."
                 return _finalize(report)
@@ -161,6 +178,7 @@ def run_doctor(
                         status="installed",
                         next_step="Installation is verified.",
                     )
+                    _append_approval_urgent_status(report, paths=paths, config=config, store=store)
                     if not report["next_step"]:
                         report["next_step"] = "No immediate action required."
                     return _finalize(report)
@@ -266,6 +284,106 @@ def run_e2e_notify(
             "（英文界面为 Settings -> Hooks）中已信任 Codex Away Mode Hook，"
             "然后运行 codex-away-mode doctor --json 检查当前 Hook 信任状态。"
         ),
+    }
+
+
+def run_e2e_approval_urgent(
+    paths,
+    *,
+    config: AppConfig,
+    lark,
+    clock,
+) -> dict[str, Any]:
+    if not getattr(config, "approval_notifications_enabled", True) or not getattr(
+        config, "approval_notifications_urgent_app_enabled", True
+    ):
+        return {
+            "ok": False,
+            "failed_code": "approval_urgent_disabled",
+            "agent_next_step": "审批提醒或飞书应用内加急已关闭；如需验证，请先开启后再运行 doctor --e2e-approval-urgent --json。",
+        }
+    if not config.feishu_chat_id:
+        return {
+            "ok": False,
+            "failed_code": "feishu_chat_id_missing",
+            "agent_next_step": "请先运行 setup feishu 绑定 Bot 私聊会话，再验证审批加急。",
+        }
+    if not config.feishu_user_id:
+        return {
+            "ok": False,
+            "failed_code": "feishu_user_id_missing",
+            "agent_next_step": "请先运行 setup feishu 绑定飞书用户 open_id，再验证审批加急。",
+        }
+    try:
+        preflight = getattr(lark, "preflight_urgent_app_command", lambda: {"ok": True})()
+    except LarkCliError:
+        return {
+            "ok": False,
+            "failed_code": "approval_urgent_command_unverified",
+            "agent_next_step": "当前 lark-cli 不能确认 urgent_app 命令面；请检查本工具固定的 lark-cli 版本后重试。",
+        }
+    if not preflight.get("ok"):
+        return {
+            "ok": False,
+            "failed_code": preflight.get("failed_code", "approval_urgent_command_unverified"),
+            "agent_next_step": "当前 lark-cli 不能确认 urgent_app 命令面；请检查本工具固定的 lark-cli 版本后重试。",
+        }
+
+    now = clock.now()
+    try:
+        sent = lark.send_interactive_card(
+            chat_id=config.feishu_chat_id,
+            card=cards.permission_request_card(
+                project="Codex Away Mode",
+                cwd=str(Path.cwd()),
+                tool_name="审批加急验证",
+                description="这是一条用于验证飞书应用内加急能力的测试审批提醒。",
+                command="doctor --e2e-approval-urgent",
+                now=now,
+            ),
+        )
+    except LarkCliError:
+        return {
+            "ok": False,
+            "failed_code": "approval_urgent_card_send_failed",
+            "agent_next_step": "审批加急验证卡发送失败；请先确认基础通知可正常发送，再重试 doctor --e2e-approval-urgent --json。",
+        }
+    try:
+        urgent_result = lark.urgent_app(
+            message_id=sent.message_id,
+            user_id_list=[config.feishu_user_id],
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failed_code": _approval_urgent_failed_code(exc),
+            "agent_next_step": _approval_urgent_failure_next_step(exc),
+        }
+
+    invalid_ids = notify._extract_invalid_user_ids(urgent_result)
+    invalid_hashes = [notify._short_sensitive_hash(value) for value in invalid_ids]
+    if invalid_ids:
+        return {
+            "ok": False,
+            "failed_code": "approval_urgent_invalid_user",
+            "agent_next_step": "飞书 urgent_app 返回 invalid_user_id_list；请重新运行 setup feishu 绑定当前用户后再验证审批加急。",
+        }
+    context = _approval_urgent_verification_context(paths, config, lark=lark)
+    open_install_store(paths).set_install_state(
+        "approval_urgent",
+        {
+            "status": "verified",
+            "verified_at": now.astimezone(timezone.utc).isoformat(),
+            "message_id": sent.message_id,
+            "urgent_invalid_user_count": len(invalid_ids),
+            "urgent_invalid_user_hashes": invalid_hashes,
+            **context,
+        },
+    )
+    return {
+        "ok": True,
+        "status": "approval_urgent_verified",
+        "next_step": "审批提醒飞书应用内加急已验证。后续 PermissionRequest 审批提醒会尝试对同一张卡片追加应用内加急。",
     }
 
 
@@ -432,6 +550,144 @@ def _degrade(report: dict[str, Any], code: str, next_step: str) -> None:
 def _finalize(report: dict[str, Any]) -> dict[str, Any]:
     report["ok"] = not report["failed_codes"] and not report["degraded_codes"]
     return report
+
+
+def _append_approval_urgent_status(
+    report: dict[str, Any],
+    *,
+    paths,
+    config: AppConfig,
+    store: StateStore,
+) -> None:
+    if not getattr(config, "approval_notifications_enabled", True):
+        return
+    if not getattr(config, "approval_notifications_urgent_app_enabled", True):
+        return
+    if not config.feishu_user_id:
+        _degrade(
+            report,
+            "approval_urgent_unverified",
+            "基础飞书通知可用，但审批提醒加急尚未验证；请先运行 setup feishu 绑定飞书用户，再显式运行 doctor --e2e-approval-urgent --json。",
+        )
+        return
+    state = store.get_install_state("approval_urgent", {})
+    current = _approval_urgent_verification_context(
+        paths,
+        config,
+        lark=LarkCli(config.lark_cli_path),
+    )
+    if state.get("status") == "verified" and _approval_urgent_context_matches(state, current):
+        report["passed_codes"].append("approval_urgent_verified")
+        return
+    _degrade(
+        report,
+        "approval_urgent_unverified",
+        "基础飞书通知可用；审批提醒加急尚未验证。如需验证，请先告知用户会发送真实飞书加急测试，再运行 codex-away-mode doctor --e2e-approval-urgent --json。",
+    )
+
+
+def _approval_urgent_verification_context(paths, config: AppConfig, *, lark=None) -> dict[str, Any]:
+    app_id_hash, profile_hash = _lark_app_config_hashes(lark, config)
+    return {
+        "approval_urgent_verified_lark_cli_version": _lark_cli_version(lark),
+        "approval_urgent_verified_app_id_hash": app_id_hash,
+        "approval_urgent_verified_profile_hash": profile_hash,
+        "approval_urgent_verified_feishu_user_id_hash": StateStore.hash_sensitive(
+            config.feishu_user_id
+        ),
+        "approval_urgent_verified_feishu_chat_id_hash": StateStore.hash_sensitive(
+            config.feishu_chat_id
+        ),
+        "approval_urgent_verified_lark_cli_path_hash": StateStore.hash_sensitive(
+            config.lark_cli_path
+        ),
+        "approval_urgent_verified_hooks_fingerprint": hooks_fingerprint(paths),
+    }
+
+
+def _approval_urgent_context_matches(state: dict[str, Any], current: dict[str, Any]) -> bool:
+    for key, value in current.items():
+        if state.get(key) != value:
+            return False
+    return True
+
+
+def _lark_cli_version(lark) -> str:
+    if lark is None:
+        return "unknown"
+    version_method = getattr(lark, "version_info", None)
+    if version_method is None:
+        return "unknown"
+    try:
+        data = version_method()
+    except LarkCliError:
+        return "unknown"
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def _lark_app_config_hashes(lark, config: AppConfig) -> tuple[str | None, str | None]:
+    if lark is None:
+        return None, StateStore.hash_sensitive(config.lark_cli_path)
+    status_method = getattr(lark, "app_config_status", None)
+    if status_method is None:
+        return None, StateStore.hash_sensitive(getattr(lark, "binary", None) or config.lark_cli_path)
+    try:
+        status = status_method()
+    except LarkCliError:
+        return (
+            StateStore.hash_sensitive("app_config:unknown"),
+            StateStore.hash_sensitive(getattr(lark, "binary", None) or config.lark_cli_path),
+        )
+    detail = status.get("detail", status) if isinstance(status, dict) else status
+    app_id = _find_lark_config_value(detail, {"appid", "clientid", "cliappid"})
+    profile = _find_lark_config_value(detail, {"profile", "profilename", "configname"})
+    app_identity = _stable_json(detail)
+    profile_identity = profile or app_id or getattr(lark, "binary", None) or config.lark_cli_path
+    return StateStore.hash_sensitive(app_identity), StateStore.hash_sensitive(profile_identity)
+
+
+def _find_lark_config_value(value: Any, keys: set[str]) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = "".join(char for char in str(key).lower() if char.isalnum())
+            if normalized in keys and item is not None:
+                return str(item)
+        for item in value.values():
+            found = _find_lark_config_value(item, keys)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_lark_config_value(item, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _stable_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _approval_urgent_failed_code(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "im:message.urgent" in text or "permission" in text or "scope" in text:
+        return "approval_urgent_permission_missing"
+    if "user" in text and "missing" in text:
+        return "feishu_user_id_missing"
+    return "approval_urgent_unverified"
+
+
+def _approval_urgent_failure_next_step(exc: Exception) -> str:
+    if _approval_urgent_failed_code(exc) == "approval_urgent_permission_missing":
+        return (
+            "飞书审批提醒卡已可发送，但应用内加急权限不足。请在飞书开放平台 -> 权限管理 -> 开通权限中增加 "
+            "im:message.urgent（发送应用内加急消息）。如果页面也展示 im:message.urgent:app_send，"
+            "则一并开通。发布并完成管理员审批后，再运行 doctor --e2e-approval-urgent --json。"
+        )
+    return "审批提醒加急验证失败；请检查 lark-cli、飞书 Bot 权限和用户绑定后重试。"
 
 
 def _last_hook_invocation(

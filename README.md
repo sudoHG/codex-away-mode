@@ -259,6 +259,7 @@ python3 /path/to/quick_validate.py codex-away-mode
 - 运行态数据默认在 `${TMPDIR}/codex-away-mode/state.sqlite`。
 - 常规飞书通知卡片不显示原始工作目录。
 - PermissionRequest 卡片只是提醒，不会把 Codex 审批能力转移到飞书。
+- 审批提醒可追加飞书应用内加急，但用户仍必须回到 Codex 桌面端应用处理审批。
 
 更多说明见：
 

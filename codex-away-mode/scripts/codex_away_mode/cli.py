@@ -57,6 +57,7 @@ def build_parser():
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--route-probe", action="store_true")
     doctor.add_argument("--e2e-notify", action="store_true")
+    doctor.add_argument("--e2e-approval-urgent", action="store_true")
 
     notify = subparsers.add_parser("notify")
     notify_subparsers = notify.add_subparsers(dest="notify_command", required=True)
@@ -202,6 +203,7 @@ def _main(argv, *, stdin=None):
                 paths,
                 route_probe=args.route_probe,
                 e2e_notify=args.e2e_notify,
+                e2e_approval_urgent=args.e2e_approval_urgent,
                 cwd=os.getcwd(),
             )
         )
@@ -765,6 +767,16 @@ class _NotificationClient:
                     explicit_codex_session_id=payload.get("session_id"),
                 ),
             )
+        )
+
+    def send_permission_request_urgent(self, *, message_id: str):
+        if not self.config.feishu_user_id:
+            raise MissingFeishuBinding(
+                "Missing feishu_user_id; run setup feishu before approval urgent reminders."
+            )
+        return self.lark.urgent_app(
+            message_id=message_id,
+            user_id_list=[self.config.feishu_user_id],
         )
 
     def _send_card(self, card):

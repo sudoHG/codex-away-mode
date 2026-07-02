@@ -72,7 +72,15 @@ ${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode doctor --e2e-noti
 
 `notify test` only proves a basic Feishu send. `doctor --e2e-notify --json` proves the notification-delivery path, but it runs from the CLI and does not pass through Codex Desktop's Hook trust gate. Installation is complete only after `doctor --json` sees both notification delivery and the current Codex Desktop Hook trust state for the managed Stop, UserPromptSubmit, and PermissionRequest hooks. If `doctor --json` reports `hook_trust_disabled` or `hook_trust_missing`, ask the user to open Codex Desktop 设置 -> 钩子 (English UI: Settings -> Hooks), trust the Codex Away Mode hooks, then run `doctor --json` again.
 
-The PermissionRequest hook sends approval reminder cards when Codex is waiting for the user to approve an operation. It does not approve or reject operations from Feishu. Tell users to return to Codex Desktop to handle the approval.
+The PermissionRequest hook sends approval reminder cards when Codex is waiting for the user to approve an operation. It can also call Feishu `urgent_app` for that reminder card when `approval_notifications_urgent_app_enabled = true`. It does not approve or reject operations from Feishu. Tell users to return to Codex Desktop to handle the approval.
+
+To verify approval urgent delivery, first tell the user this will send a real Feishu in-app urgent test message, then run:
+
+```bash
+${CODEX_AWAY_HOME:-$HOME/.codex-away-mode}/bin/codex-away-mode doctor --e2e-approval-urgent --json
+```
+
+If the urgent verification reports missing permission, do not restart OAuth repeatedly. Ask the user to open Feishu Open Platform -> 权限管理 -> 开通权限, add `im:message.urgent` / 发送应用内加急消息, publish the app if the console asks for publishing, finish administrator approval if required, then rerun the explicit urgent verification. Some lark-cli schemas mention `im:message.urgent:app_send`, but the Feishu console may not expose it as a separate selectable permission; if it appears in the console, add it together.
 
 Run the route probe only when the user is ready to reply to a real Feishu test card:
 
